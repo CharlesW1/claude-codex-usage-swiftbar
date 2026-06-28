@@ -68,3 +68,27 @@ def time_until(resets_at: str, now: datetime) -> float:
 def format_reset_day(resets_at: str, now: datetime) -> str:
     dt = _parse_iso(resets_at)
     return dt.strftime("%a %-d %b")
+
+
+def _pct(p: float) -> str:
+    return f"{int(round(p))}%"
+
+
+def render_usage(u: Usage, now: datetime) -> str:
+    sess_color = severity_color(u.session_pct)
+    week_color = severity_color(u.weekly_pct)
+    sess_left = format_duration(time_until(u.session_resets_at, now), compact=True)
+    sess_left_long = format_duration(time_until(u.session_resets_at, now), compact=False)
+    week_day = format_reset_day(u.weekly_resets_at, now)
+
+    bar = f"{_pct(u.session_pct)} · {sess_left} | sfimage=gauge.medium color={sess_color}"
+    lines = [
+        bar,
+        "---",
+        f"Session (5h)  {_pct(u.session_pct)}  ·  resets in {sess_left_long} | color={sess_color}",
+        f"Weekly  {_pct(u.weekly_pct)}  ·  resets {week_day} | color={week_color}",
+        "---",
+        "Refresh | refresh=true",
+        "Run /usage in Claude Code for full details | color=gray",
+    ]
+    return "\n".join(lines)
