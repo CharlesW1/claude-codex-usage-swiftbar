@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+BETA_HEADER = "oauth-2025-04-20"
 
 GREEN = "#34c759"
 ORANGE = "#ff9500"
@@ -111,3 +118,60 @@ def render_error(err: UsageError) -> str:
         bar = "? | sfimage=gauge.medium color=gray"
         note = f"Unexpected response: {err.detail}"
     return "\n".join([bar, "---", f"{note} | color=gray", "Refresh | refresh=true"])
+
+
+def read_token() -> str:
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise UsageError("no_token", str(exc))
+    if out.returncode != 0 or not out.stdout.strip():
+        raise UsageError("no_token", out.stderr.strip() or "keychain item not found")
+    try:
+        data = json.loads(out.stdout)
+        return data["claudeAiOauth"]["accessToken"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise UsageError("no_token", f"bad credential payload: {exc}")
+
+
+def fetch_usage(token: str) -> dict:
+    req = urllib.request.Request(
+        USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "anthropic-beta": BETA_HEADER,
+            "User-Agent": "claude-usage-swiftbar/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise UsageError("auth", "HTTP 401")
+        raise UsageError("bad_response", f"HTTP {exc.code}")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise UsageError("offline", str(exc))
+    except ValueError as exc:
+        raise UsageError("bad_response", f"non-JSON: {exc}")
+
+
+def build_output(now: datetime) -> str:
+    try:
+        token = read_token()
+        data = fetch_usage(token)
+        usage = parse_usage(data)
+        return render_usage(usage, now)
+    except UsageError as err:
+        return render_error(err)
+
+
+def main() -> None:
+    print(build_output(datetime.now(timezone.utc)))
+
+
+if __name__ == "__main__":
+    main()
