@@ -10,23 +10,32 @@ number, reset times, and a refresh button.
 
 1. Install SwiftBar: `brew install --cask swiftbar`
 2. Launch SwiftBar and pick a plugin folder when prompted.
-3. Copy **both** `claude-usage.60s.py` and `claude_usage.py` into that folder:
+3. Point SwiftBar at a folder that contains **only** these two files —
+   `claude-usage.300s.py` and `claude_usage.py`. Do **not** point SwiftBar at
+   this git repo: SwiftBar tries to run every file it finds (recursively), so a
+   repo full of docs/tests shows up as broken `[?]` plugins.
+
+   A clean way to keep edits live is a dedicated folder with symlinks back here:
    ```bash
-   cp claude-usage.60s.py claude_usage.py "$HOME/Library/Application Support/SwiftBar/Plugins/"
-   chmod +x "$HOME/Library/Application Support/SwiftBar/Plugins/claude-usage.60s.py"
+   mkdir -p ~/swiftbar-plugins
+   ln -sf "$PWD/claude-usage.300s.py" ~/swiftbar-plugins/claude-usage.300s.py
+   ln -sf "$PWD/claude_usage.py"      ~/swiftbar-plugins/claude_usage.py
    ```
-   (Adjust the path to whichever plugin folder you chose.)
+   Then in SwiftBar → Preferences set the plugin folder to `~/swiftbar-plugins`.
 4. In SwiftBar, choose **Refresh All**. On first run, macOS shows a Keychain
    prompt for `Claude Code-credentials` — click **Always Allow**.
 
-The plugin refreshes every 60 seconds (the `.60s.` in the filename). Rename to
-`.30s.` / `.5m.` etc. to change the interval.
+The plugin refreshes every 5 minutes (the `.300s.` in the filename). A short
+interval can trip the usage endpoint's rate limit (HTTP 429); 5 minutes is a
+safe default. Rename to `.120s.` / `.60s.` etc. to change it.
 
 ## How it works
 
 Each run reads your Claude Code OAuth token from the macOS Keychain and calls
 `GET https://api.anthropic.com/api/oauth/usage` — the same data `/usage` shows.
-Nothing is stored or sent anywhere else.
+The last good reading is cached at `~/.cache/claude-usage/last.json` so a
+transient rate-limit or network blip shows the previous numbers (marked "last
+reading") instead of an error. Nothing is sent anywhere except Anthropic's API.
 
 ## Troubleshooting
 
@@ -34,6 +43,9 @@ Nothing is stored or sent anywhere else.
 - **`auth`** — the token expired and Claude Code isn't running to refresh it.
   Open Claude Code once, then Refresh.
 - **`—`** — offline / couldn't reach `api.anthropic.com`.
+- **`?` + "last reading"** — the endpoint rate-limited (HTTP 429) or a network
+  blip; showing the cached value. Clears on the next successful poll. If it
+  persists, increase the refresh interval (rename to a larger `.NNNs.`).
 
 ## Development
 

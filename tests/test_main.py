@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from datetime import datetime, timezone
 import claude_usage
@@ -10,10 +12,15 @@ class TestBuildOutput(unittest.TestCase):
     def setUp(self):
         self._orig_token = claude_usage.read_token
         self._orig_fetch = claude_usage.fetch_usage
+        # Redirect the cache off the real ~/.cache so tests stay hermetic.
+        self._tmp = tempfile.mkdtemp()
+        self._orig_cache = claude_usage.CACHE_PATH
+        claude_usage.CACHE_PATH = os.path.join(self._tmp, "last.json")
 
     def tearDown(self):
         claude_usage.read_token = self._orig_token
         claude_usage.fetch_usage = self._orig_fetch
+        claude_usage.CACHE_PATH = self._orig_cache
 
     def test_success_path(self):
         claude_usage.read_token = lambda: "tok"

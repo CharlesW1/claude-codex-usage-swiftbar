@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Optional
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 BETA_HEADER = "oauth-2025-04-20"
+CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last.json")
 
 GREEN = "#34c759"
 ORANGE = "#ff9500"
@@ -81,7 +84,7 @@ def _pct(p: float) -> str:
     return f"{int(round(p))}%"
 
 
-def render_usage(u: Usage, now: datetime) -> str:
+def render_usage(u: Usage, now: datetime, stale: bool = False) -> str:
     sess_color = severity_color(u.session_pct)
     week_color = severity_color(u.weekly_pct)
     sess_left = format_duration(time_until(u.session_resets_at, now), compact=True)
@@ -95,6 +98,10 @@ def render_usage(u: Usage, now: datetime) -> str:
         f"Session (5h)  {_pct(u.session_pct)}  ·  resets in {sess_left_long} | color={sess_color}",
         f"Weekly  {_pct(u.weekly_pct)}  ·  resets {week_day} | color={week_color}",
         "---",
+    ]
+    if stale:
+        lines.append("Showing last reading (rate-limited or offline) | color=gray")
+    lines += [
         "Refresh | refresh=true",
         "Run /usage in Claude Code for full details | color=gray",
     ]
@@ -159,13 +166,51 @@ def fetch_usage(token: str) -> dict:
         raise UsageError("bad_response", f"non-JSON: {exc}")
 
 
+def cache_save(u: Usage) -> None:
+    try:
+        os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
+        with open(CACHE_PATH, "w") as f:
+            json.dump({
+                "session_pct": u.session_pct,
+                "session_resets_at": u.session_resets_at,
+                "weekly_pct": u.weekly_pct,
+                "weekly_resets_at": u.weekly_resets_at,
+            }, f)
+    except OSError:
+        pass
+
+
+def cache_load() -> Optional[Usage]:
+    try:
+        with open(CACHE_PATH) as f:
+            d = json.load(f)
+        return Usage(
+            session_pct=d["session_pct"],
+            session_resets_at=d["session_resets_at"],
+            weekly_pct=d["weekly_pct"],
+            weekly_resets_at=d["weekly_resets_at"],
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+# Transient failures fall back to the last good reading; auth/no_token do not,
+# because those need the user to act and the cached number would mask that.
+_TRANSIENT_KINDS = ("offline", "bad_response")
+
+
 def build_output(now: datetime) -> str:
     try:
         token = read_token()
         data = fetch_usage(token)
         usage = parse_usage(data)
+        cache_save(usage)
         return render_usage(usage, now)
     except UsageError as err:
+        if err.kind in _TRANSIENT_KINDS:
+            cached = cache_load()
+            if cached is not None:
+                return render_usage(cached, now, stale=True)
         return render_error(err)
 
 
