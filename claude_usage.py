@@ -92,3 +92,22 @@ def render_usage(u: Usage, now: datetime) -> str:
         "Run /usage in Claude Code for full details | color=gray",
     ]
     return "\n".join(lines)
+
+
+_ERROR_BARS = {
+    "no_token": ("􀇿 Claude ? | sfimage=exclamationmark.triangle color=#ff9500",
+                 "Keychain access denied — click Always Allow on the prompt."),
+    "auth": ("􀇿 auth | sfimage=exclamationmark.triangle color=#ff9500",
+             "Token expired. Open Claude Code to refresh."),
+    "offline": ("— | sfimage=gauge.medium color=gray",
+                "Offline — could not reach api.anthropic.com."),
+}
+
+
+def render_error(err: UsageError) -> str:
+    if err.kind in _ERROR_BARS:
+        bar, note = _ERROR_BARS[err.kind]
+    else:  # bad_response / unknown
+        bar = "? | sfimage=gauge.medium color=gray"
+        note = f"Unexpected response: {err.detail}"
+    return "\n".join([bar, "---", f"{note} | color=gray", "Refresh | refresh=true"])
