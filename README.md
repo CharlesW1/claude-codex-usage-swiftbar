@@ -31,8 +31,19 @@ safe default. Rename to `.120s.` / `.60s.` etc. to change it.
 
 ## How it works
 
-Each run reads your Claude Code OAuth token from the macOS Keychain and calls
-`GET https://api.anthropic.com/api/oauth/usage` — the same data `/usage` shows.
+Each run reads your Claude Code OAuth token from the macOS Keychain
+(`Claude Code-credentials`) and calls `GET https://api.anthropic.com/api/oauth/usage`
+— the same data `/usage` shows.
+
+**Auto-refresh:** OAuth access tokens expire every few hours. If the token is
+expired (or within 5 minutes of expiry), the plugin uses the stored
+`refreshToken` to mint a fresh one via Claude's OAuth endpoint and writes it back
+to the Keychain — exactly like Claude Code does — so the widget stays current
+even if you only ever use the Claude desktop app and never open the CLI. The
+rotated token is also mirrored to `~/.cache/claude-usage/creds.json` (mode 600),
+and whichever copy (Keychain vs. cache) has the later expiry wins, so the
+plugin's refreshes and Claude Code's own refreshes stay in sync.
+
 The last good reading is cached at `~/.cache/claude-usage/last.json` so a
 transient rate-limit or network blip shows the previous numbers (marked "last
 reading") instead of an error. Nothing is sent anywhere except Anthropic's API.
@@ -40,8 +51,9 @@ reading") instead of an error. Nothing is sent anywhere except Anthropic's API.
 ## Troubleshooting
 
 - **`Claude ?`** — Keychain access was denied; click *Always Allow* on the prompt.
-- **`auth`** — the token expired and Claude Code isn't running to refresh it.
-  Open Claude Code once, then Refresh.
+- **`auth`** — auto-refresh failed: the stored `refreshToken` itself is dead
+  (revoked or you logged out). Sign in again in Claude Code or the desktop app,
+  then Refresh.
 - **`—`** — offline / couldn't reach `api.anthropic.com`.
 - **`?` + "last reading"** — the endpoint rate-limited (HTTP 429) or a network
   blip; showing the cached value. Clears on the next successful poll. If it

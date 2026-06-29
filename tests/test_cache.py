@@ -17,12 +17,12 @@ class CacheTestBase(unittest.TestCase):
         self._tmp = tempfile.mkdtemp()
         self._orig_cache = claude_usage.CACHE_PATH
         claude_usage.CACHE_PATH = os.path.join(self._tmp, "last.json")
-        self._orig_token = claude_usage.read_token
+        self._orig_token = claude_usage.current_token
         self._orig_fetch = claude_usage.fetch_usage
 
     def tearDown(self):
         claude_usage.CACHE_PATH = self._orig_cache
-        claude_usage.read_token = self._orig_token
+        claude_usage.current_token = self._orig_token
         claude_usage.fetch_usage = self._orig_fetch
 
 
@@ -37,7 +37,7 @@ class TestCacheRoundTrip(CacheTestBase):
 class TestBuildOutputFallback(CacheTestBase):
     def test_429_falls_back_to_cached_value(self):
         cache_save(U)
-        claude_usage.read_token = lambda: "tok"
+        claude_usage.current_token = lambda now_ms, force=False: "tok"
         def boom(t):
             raise UsageError("bad_response", "HTTP 429")
         claude_usage.fetch_usage = boom
@@ -47,7 +47,7 @@ class TestBuildOutputFallback(CacheTestBase):
         self.assertIn("last reading", out)
 
     def test_no_cache_429_shows_error(self):
-        claude_usage.read_token = lambda: "tok"
+        claude_usage.current_token = lambda now_ms, force=False: "tok"
         def boom(t):
             raise UsageError("bad_response", "HTTP 429")
         claude_usage.fetch_usage = boom
@@ -56,7 +56,7 @@ class TestBuildOutputFallback(CacheTestBase):
 
     def test_auth_error_never_uses_cache(self):
         cache_save(U)
-        claude_usage.read_token = lambda: "tok"
+        claude_usage.current_token = lambda now_ms, force=False: "tok"
         def boom(t):
             raise UsageError("auth")
         claude_usage.fetch_usage = boom

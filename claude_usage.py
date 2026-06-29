@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -13,6 +14,12 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 BETA_HEADER = "oauth-2025-04-20"
 CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last.json")
+CREDS_PATH = os.path.expanduser("~/.cache/claude-usage/creds.json")
+
+# Claude Code's public OAuth client; refresh proactively this far before expiry.
+OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
+OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+EXPIRY_SKEW_MS = 5 * 60 * 1000
 
 GREEN = "#34c759"
 ORANGE = "#ff9500"
@@ -194,15 +201,148 @@ def cache_load() -> Optional[Usage]:
         return None
 
 
+def creds_file_save(oauth: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(CREDS_PATH), exist_ok=True)
+        with open(CREDS_PATH, "w") as f:
+            json.dump({"claudeAiOauth": oauth}, f)
+        os.chmod(CREDS_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def creds_file_load() -> Optional[dict]:
+    try:
+        with open(CREDS_PATH) as f:
+            return json.load(f)["claudeAiOauth"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _keychain_account() -> str:
+    out = subprocess.run(
+        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE],
+        capture_output=True, text=True, timeout=10,
+    )
+    m = re.search(r'"acct"<blob>="([^"]*)"', out.stdout)
+    return m.group(1) if m else os.environ.get("USER", "")
+
+
+def read_credentials() -> dict:
+    """Return the freshest credentials, merging the Keychain blob with our own
+    cache file (whichever has the later expiry wins, so Claude Code's refreshes
+    and ours stay in sync)."""
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise UsageError("no_token", str(exc))
+    if out.returncode != 0 or not out.stdout.strip():
+        raise UsageError("no_token", out.stderr.strip() or "keychain item not found")
+    try:
+        oauth = json.loads(out.stdout)["claudeAiOauth"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise UsageError("no_token", f"bad credential payload: {exc}")
+
+    cached = creds_file_load()
+    if cached and (cached.get("expiresAt") or 0) > (oauth.get("expiresAt") or 0):
+        oauth = cached
+
+    if not oauth.get("accessToken"):
+        raise UsageError("no_token", "no access token in credentials")
+    return {
+        "access_token": oauth.get("accessToken"),
+        "refresh_token": oauth.get("refreshToken"),
+        "expires_at": oauth.get("expiresAt"),
+        "account": _keychain_account(),
+        "oauth": oauth,
+    }
+
+
+def token_refresh(refresh_token: str) -> dict:
+    """Exchange a refresh token for a fresh access token via Claude's OAuth
+    endpoint. Returns {access_token, refresh_token|None, expires_in}."""
+    if not refresh_token:
+        raise UsageError("auth", "no refresh token; re-login in Claude Code")
+    body = json.dumps({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": OAUTH_CLIENT_ID,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        OAUTH_TOKEN_URL, data=body, method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": "claude-usage-swiftbar/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            j = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # 400 invalid_grant means the refresh token itself is dead.
+        raise UsageError("auth", f"refresh failed (HTTP {exc.code}); re-login in Claude Code")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise UsageError("offline", str(exc))
+    except ValueError as exc:
+        raise UsageError("auth", f"refresh returned non-JSON: {exc}")
+    if not j.get("access_token"):
+        raise UsageError("auth", "refresh response had no access_token")
+    return {
+        "access_token": j["access_token"],
+        "refresh_token": j.get("refresh_token"),
+        "expires_in": j.get("expires_in", 28800),
+    }
+
+
+def keychain_write(account: str, oauth: dict) -> None:
+    """Best-effort write-back of the rotated token to the Keychain, like Claude
+    Code does. Failures are non-fatal: the cache file already holds the tokens."""
+    blob = json.dumps({"claudeAiOauth": oauth})
+    try:
+        subprocess.run(
+            ["security", "add-generic-password", "-U",
+             "-a", account, "-s", KEYCHAIN_SERVICE, "-w", blob],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def current_token(now_ms: int, force: bool = False) -> str:
+    """Return a valid access token, refreshing (and persisting) if it is expired,
+    within the proactive skew window, or when forced."""
+    creds = read_credentials()
+    expires_at = creds["expires_at"]
+    if not force and expires_at and now_ms < expires_at - EXPIRY_SKEW_MS:
+        return creds["access_token"]
+
+    refreshed = token_refresh(creds["refresh_token"])
+    oauth = dict(creds["oauth"])
+    oauth["accessToken"] = refreshed["access_token"]
+    oauth["refreshToken"] = refreshed["refresh_token"] or creds["refresh_token"]
+    oauth["expiresAt"] = now_ms + refreshed["expires_in"] * 1000
+    creds_file_save(oauth)
+    keychain_write(creds["account"], oauth)
+    return oauth["accessToken"]
+
+
 # Transient failures fall back to the last good reading; auth/no_token do not,
 # because those need the user to act and the cached number would mask that.
 _TRANSIENT_KINDS = ("offline", "bad_response")
 
 
 def build_output(now: datetime) -> str:
+    now_ms = int(now.timestamp() * 1000)
     try:
-        token = read_token()
-        data = fetch_usage(token)
+        token = current_token(now_ms)
+        try:
+            data = fetch_usage(token)
+        except UsageError as exc:
+            if exc.kind == "auth":  # reactive: token rejected, force one refresh
+                token = current_token(now_ms, force=True)
+                data = fetch_usage(token)
+            else:
+                raise
         usage = parse_usage(data)
         cache_save(usage)
         return render_usage(usage, now)
