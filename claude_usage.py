@@ -48,9 +48,9 @@ def format_duration(seconds: float, compact: bool) -> str:
 @dataclass
 class Usage:
     session_pct: float
-    session_resets_at: str
+    session_resets_at: Optional[str]
     weekly_pct: float
-    weekly_resets_at: str
+    weekly_resets_at: Optional[str]
 
 
 class UsageError(Exception):
@@ -65,10 +65,10 @@ def parse_usage(data: dict) -> Usage:
         fh = data["five_hour"]
         sd = data["seven_day"]
         return Usage(
-            session_pct=float(fh["utilization"]),
-            session_resets_at=str(fh["resets_at"]),
-            weekly_pct=float(sd["utilization"]),
-            weekly_resets_at=str(sd["resets_at"]),
+            session_pct=float(fh.get("utilization") or 0.0),
+            session_resets_at=fh.get("resets_at"),  # None when no active window
+            weekly_pct=float(sd.get("utilization") or 0.0),
+            weekly_resets_at=sd.get("resets_at"),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise UsageError("bad_response", f"unexpected payload: {exc}")
@@ -91,19 +91,35 @@ def _pct(p: float) -> str:
     return f"{int(round(p))}%"
 
 
+def _has_reset(resets_at: Optional[str]) -> bool:
+    # The endpoint sends null (or a stale cache may hold the string "None")
+    # when there is no active window.
+    return bool(resets_at) and resets_at != "None"
+
+
 def render_usage(u: Usage, now: datetime, stale: bool = False) -> str:
     sess_color = severity_color(u.session_pct)
     week_color = severity_color(u.weekly_pct)
-    sess_left = format_duration(time_until(u.session_resets_at, now), compact=True)
-    sess_left_long = format_duration(time_until(u.session_resets_at, now), compact=False)
-    week_day = format_reset_day(u.weekly_resets_at, now)
 
-    bar = f"{_pct(u.session_pct)} · {sess_left} | sfimage=gauge.medium color={sess_color}"
+    if _has_reset(u.session_resets_at):
+        sess_left = format_duration(time_until(u.session_resets_at, now), compact=True)
+        sess_left_long = format_duration(time_until(u.session_resets_at, now), compact=False)
+        bar = f"{_pct(u.session_pct)} · {sess_left} | sfimage=gauge.medium color={sess_color}"
+        session_line = f"Session (5h)  {_pct(u.session_pct)}  ·  resets in {sess_left_long} | color={sess_color}"
+    else:
+        bar = f"{_pct(u.session_pct)} | sfimage=gauge.medium color={sess_color}"
+        session_line = f"Session (5h)  {_pct(u.session_pct)}  ·  no active session | color={sess_color}"
+
+    if _has_reset(u.weekly_resets_at):
+        weekly_line = f"Weekly  {_pct(u.weekly_pct)}  ·  resets {format_reset_day(u.weekly_resets_at, now)} | color={week_color}"
+    else:
+        weekly_line = f"Weekly  {_pct(u.weekly_pct)} | color={week_color}"
+
     lines = [
         bar,
         "---",
-        f"Session (5h)  {_pct(u.session_pct)}  ·  resets in {sess_left_long} | color={sess_color}",
-        f"Weekly  {_pct(u.weekly_pct)}  ·  resets {week_day} | color={week_color}",
+        session_line,
+        weekly_line,
         "---",
     ]
     if stale:
