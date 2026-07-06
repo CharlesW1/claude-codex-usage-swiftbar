@@ -55,7 +55,7 @@ class TestTransientFallback(CacheBase):
             "rate_limit": {"primary_window": {"used_percent": 50, "reset_at": 1782629880},
                            "secondary_window": {"used_percent": 28, "reset_at": 1783917148}}}
         out = build_output(NOW, interval_s=300)
-        self.assertIn("Session (5h)  46%", out)   # served from cache
+        self.assertIn("5-hour  46%", out)   # served from cache
         self.assertIn("last reading", out)        # marked stale
 
     def test_codex_offline_falls_back_to_cache(self):

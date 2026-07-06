@@ -57,6 +57,22 @@ def format_duration(seconds: float, compact: bool) -> str:
     return f"{hours}h{sep}{minutes}m"
 
 
+def format_countdown(seconds: float) -> str:
+    """Time remaining as its two largest non-zero units, e.g. '2d 1h',
+    '1h 35m', '35m 8s', or '8s'."""
+    s = int(max(0, seconds))
+    days, r = divmod(s, 86400)
+    hours, r = divmod(r, 3600)
+    minutes, secs = divmod(r, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 @dataclass
 class Usage:
     session_pct: float
@@ -125,11 +141,6 @@ def time_until(resets_at: str, now: datetime) -> float:
     return (_parse_iso(resets_at) - now).total_seconds()
 
 
-def format_reset_day(resets_at: str, now: datetime) -> str:
-    dt = _parse_iso(resets_at)
-    return dt.strftime("%a %-d %b")
-
-
 def _pct(p: float) -> str:
     return f"{int(round(p))}%"
 
@@ -196,14 +207,11 @@ def next_check_label(now: datetime, interval_s: int) -> str:
 
 
 def _window_line(label: str, pct: float, resets_at: Optional[str],
-                 now: datetime, style: str) -> str:
+                 now: datetime) -> str:
     color = severity_color(pct)
     if not _has_reset(resets_at):
         return f"{label}  {_pct(pct)} | color={color}"
-    if style == "day":
-        when = "resets " + format_reset_day(resets_at, now)
-    else:
-        when = "resets in " + format_duration(time_until(resets_at, now), compact=False)
+    when = "resets in " + format_countdown(time_until(resets_at, now))
     return f"{label}  {_pct(pct)}  ·  {when} | color={color}"
 
 
@@ -219,10 +227,10 @@ def render_dropdown(
 ) -> str:
     lines = ["---", "Claude | color=" + GRAY]
     if claude is not None:
-        lines.append(_window_line("Session (5h)", claude.session_pct,
-                                  claude.session_resets_at, now, "duration"))
+        lines.append(_window_line("5-hour", claude.session_pct,
+                                  claude.session_resets_at, now))
         lines.append(_window_line("Weekly", claude.weekly_pct,
-                                  claude.weekly_resets_at, now, "day"))
+                                  claude.weekly_resets_at, now))
         if stale_claude:
             lines.append(_STALE_NOTE)
     else:
@@ -231,9 +239,9 @@ def render_dropdown(
     lines.append("Codex | color=" + GRAY)
     if codex is not None:
         lines.append(_window_line("5-hour", codex.primary_pct,
-                                  codex.primary_resets_at, now, "duration"))
+                                  codex.primary_resets_at, now))
         lines.append(_window_line("Weekly", codex.secondary_pct,
-                                  codex.secondary_resets_at, now, "day"))
+                                  codex.secondary_resets_at, now))
         if stale_codex:
             lines.append(_STALE_NOTE)
     else:

@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timezone
-from claude_usage import parse_usage, time_until, format_reset_day, Usage, UsageError
+from claude_usage import parse_usage, time_until, Usage, UsageError
 
 GOOD = {
     "five_hour": {"utilization": 46.0, "resets_at": "2026-06-28T10:30:00.673002+00:00"},
@@ -31,10 +31,6 @@ class TestTimeMath(unittest.TestCase):
         now = datetime(2026, 6, 28, 10, 0, 0, tzinfo=timezone.utc)
         secs = time_until("2026-06-28T10:30:00Z", now)
         self.assertEqual(int(secs), 30 * 60)
-
-    def test_format_reset_day(self):
-        now = datetime(2026, 6, 28, 7, 18, 0, tzinfo=timezone.utc)
-        self.assertEqual(format_reset_day("2026-07-04T12:00:00+00:00", now), "Sat 4 Jul")
 
 
 if __name__ == "__main__":

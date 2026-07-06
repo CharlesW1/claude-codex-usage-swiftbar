@@ -50,7 +50,7 @@ class TestBothProviders(BuildBase):
         self.assertIn("Cx 50%", first)
         self.assertNotIn("↻", first)          # next-check moved into the menu
         self.assertIn("↻", out)               # ...and is present in the dropdown
-        self.assertIn("Session (5h)  46%", out)
+        self.assertIn("5-hour  46%", out)
         self.assertIn("5-hour  50%", out)
 
     def test_claude_locked_codex_ok(self):

@@ -11,11 +11,11 @@ class TestRenderDropdown(unittest.TestCase):
     def test_both_providers_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)
         self.assertIn("Claude | color=#8e8e93", out)
-        self.assertIn("Session (5h)  11%  ·  resets in 3h 12m | color=#34c759", out)
-        self.assertIn("Weekly  43%  ·  resets Sat 4 Jul | color=#34c759", out)
+        self.assertIn("5-hour  11%  ·  resets in 3h 12m | color=#34c759", out)
+        self.assertIn("Weekly  43%  ·  resets in 6d 4h | color=#34c759", out)
         self.assertIn("Codex | color=#8e8e93", out)
         self.assertIn("5-hour  50%  ·  resets in 1h 42m | color=#34c759", out)
-        self.assertIn("Weekly  28%  ·  resets Sat 4 Jul | color=#34c759", out)
+        self.assertIn("Weekly  28%  ·  resets in 6d 4h | color=#34c759", out)
 
     def test_next_check_and_refresh_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)
@@ -37,7 +37,7 @@ class TestRenderDropdown(unittest.TestCase):
         out = render_dropdown(CLAUDE, None, NOW, 300, codex_note="signed out")
         self.assertIn("Codex | color=#8e8e93", out)
         self.assertIn("signed out", out)
-        self.assertNotIn("5-hour", out)
+        self.assertNotIn("50%", out)  # no Codex usage numbers rendered
 
     def test_stale_claude_marked(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300, stale_claude=True)
