@@ -29,8 +29,9 @@ choice). Click for per-window detail, reset times, and a manual Refresh.
    mkdir -p ~/swiftbar-plugins
    ln -sf "$PWD/claude-usage.300s.py"  ~/swiftbar-plugins/claude-usage.300s.py
    ln -sf "$PWD/claude_usage.py"       ~/swiftbar-plugins/claude_usage.py
-   ln -sf "$PWD/menubar_render.swift"  ~/swiftbar-plugins/menubar_render.swift
    ```
+   (Only these two files — the Swift renderer is embedded in `claude_usage.py`,
+   so nothing else belongs in the plugin folder.)
    Then in SwiftBar → Preferences set the plugin folder to `~/swiftbar-plugins`.
 4. In SwiftBar, choose **Refresh All**. On first run macOS shows a Keychain
    prompt for `Claude Code-credentials` — click **Always Allow**. The first run
@@ -68,10 +69,13 @@ and OpenAI's own APIs.
 
 ## Menu bar rendering
 
-`menubar_render.swift` draws the two colored lines to a Retina PNG (via AppKit)
-and prints base64; the Python plugin emits it with SwiftBar's `image=` parameter.
-It's compiled once to `~/.cache/claude-usage/menubar_render` and recompiled only
-when the source changes.
+The Swift renderer source is embedded in `claude_usage.py` (`MENUBAR_SWIFT_SRC`).
+On first run it's written to `~/.cache/claude-usage/menubar_render.swift` and
+compiled to a cached binary (recompiled only when the source changes). It draws
+the two colored lines to a Retina PNG via AppKit and prints base64, which the
+plugin emits with SwiftBar's `image=` parameter. SwiftBar scales the image to the
+menu-bar height. Tune the look via the `_MENUBAR_*` constants near the top of the
+renderer section (`_MENUBAR_FONT_PT`, `_MENUBAR_PAD_X/Y`, `_MENUBAR_SCALE`).
 
 ## Troubleshooting (dropdown notes)
 

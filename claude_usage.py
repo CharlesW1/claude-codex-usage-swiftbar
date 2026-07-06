@@ -230,20 +230,80 @@ def fetch_usage(token: str) -> dict:
 
 
 RENDERER_BIN = os.path.expanduser("~/.cache/claude-usage/menubar_render")
+RENDERER_SRC = os.path.expanduser("~/.cache/claude-usage/menubar_render.swift")
+
+# Sizing knobs (points, @1x — SwiftBar scales the image to the menu-bar height,
+# so FONT_PT vs. PAD_Y sets how much of the bar height the two lines occupy).
+_MENUBAR_FONT_PT = 12.0
+_MENUBAR_PAD_X = 2.0
+_MENUBAR_PAD_Y = 1.5
+_MENUBAR_LINE_GAP = 0.0
+_MENUBAR_SCALE = 3  # render @3x for crisp Retina downscaling
+
+# Kept in a string (not a sibling file) so SwiftBar's plugin folder stays clean —
+# a stray .swift there would be run as a broken plugin.
+MENUBAR_SWIFT_SRC = r'''
+import AppKit
+
+func color(_ hex: String) -> NSColor {
+    var s = hex
+    if s.hasPrefix("#") { s.removeFirst() }
+    guard s.count == 6, let v = Int(s, radix: 16) else { return .labelColor }
+    return NSColor(srgbRed: CGFloat((v >> 16) & 0xff)/255.0,
+                   green: CGFloat((v >> 8) & 0xff)/255.0,
+                   blue: CGFloat(v & 0xff)/255.0, alpha: 1.0)
+}
+
+let a = CommandLine.arguments
+guard a.count >= 5 else { exit(1) }
+let scale: CGFloat = CGFloat(Double(ProcessInfo.processInfo.environment["MB_SCALE"] ?? "3") ?? 3)
+let fontPt = CGFloat(Double(ProcessInfo.processInfo.environment["MB_FONT"] ?? "12") ?? 12)
+let padX = CGFloat(Double(ProcessInfo.processInfo.environment["MB_PADX"] ?? "2") ?? 2)
+let padY = CGFloat(Double(ProcessInfo.processInfo.environment["MB_PADY"] ?? "1.5") ?? 1.5)
+let gap  = CGFloat(Double(ProcessInfo.processInfo.environment["MB_GAP"] ?? "0") ?? 0)
+
+let font = NSFont.systemFont(ofSize: fontPt * scale, weight: .medium)
+func line(_ s: String, _ hex: String) -> NSAttributedString {
+    NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color(hex)])
+}
+let a1 = line(a[1], a[2]); let a2 = line(a[3], a[4])
+let lh = ceil(max(a1.size().height, a2.size().height))
+let w = ceil(max(a1.size().width, a2.size().width)) + padX * scale * 2
+let h = lh * 2 + gap * scale + padY * scale * 2
+
+guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w),
+        pixelsHigh: Int(h), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+        isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+else { exit(1) }
+rep.size = NSSize(width: w, height: h)
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+// origin bottom-left: line 2 on the bottom, line 1 on top
+a2.draw(at: NSPoint(x: padX * scale, y: padY * scale))
+a1.draw(at: NSPoint(x: padX * scale, y: padY * scale + lh + gap * scale))
+NSGraphicsContext.restoreGraphicsState()
+guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
+print(png.base64EncodedString())
+'''
 
 
 def ensure_renderer() -> Optional[str]:
-    """Compile menubar_render.swift once (recompile if the source is newer).
-    Returns the binary path, or None if Swift/compilation is unavailable."""
-    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "menubar_render.swift")
-    if not os.path.exists(src):
-        return None
+    """Write the embedded Swift source to the cache dir and compile it once
+    (recompile when the source changes). Returns the binary path, or None if
+    Swift/compilation is unavailable."""
     try:
+        os.makedirs(os.path.dirname(RENDERER_BIN), exist_ok=True)
+        current = None
+        if os.path.exists(RENDERER_SRC):
+            with open(RENDERER_SRC) as f:
+                current = f.read()
+        if current != MENUBAR_SWIFT_SRC:
+            with open(RENDERER_SRC, "w") as f:
+                f.write(MENUBAR_SWIFT_SRC)
         fresh = os.path.exists(RENDERER_BIN) and \
-            os.path.getmtime(RENDERER_BIN) >= os.path.getmtime(src)
+            os.path.getmtime(RENDERER_BIN) >= os.path.getmtime(RENDERER_SRC)
         if not fresh:
-            os.makedirs(os.path.dirname(RENDERER_BIN), exist_ok=True)
-            r = subprocess.run(["swiftc", "-O", src, "-o", RENDERER_BIN],
+            r = subprocess.run(["swiftc", "-O", RENDERER_SRC, "-o", RENDERER_BIN],
                                capture_output=True, text=True, timeout=120)
             if r.returncode != 0:
                 return None
@@ -258,8 +318,12 @@ def render_menubar_image(lines: List[Tuple[str, str]]) -> Optional[str]:
     if not binp or len(lines) < 2:
         return None
     (t1, c1), (t2, c2) = lines[0], lines[1]
+    env = dict(os.environ,
+               MB_SCALE=str(_MENUBAR_SCALE), MB_FONT=str(_MENUBAR_FONT_PT),
+               MB_PADX=str(_MENUBAR_PAD_X), MB_PADY=str(_MENUBAR_PAD_Y),
+               MB_GAP=str(_MENUBAR_LINE_GAP))
     try:
-        r = subprocess.run([binp, t1, c1, t2, c2],
+        r = subprocess.run([binp, t1, c1, t2, c2], env=env,
                            capture_output=True, text=True, timeout=15)
         if r.returncode != 0 or not r.stdout.strip():
             return None
