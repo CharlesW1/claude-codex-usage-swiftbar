@@ -11,9 +11,12 @@ Cx 50% · 1h40m
 - **Top line (`C`)** — Claude Code's 5-hour session usage (the `/usage` number)
   and the time until that window resets.
 - **Bottom line (`Cx`)** — Codex's 5-hour usage (`/status`) and its reset.
-- The **usage %** and the **reset timer** are colored independently: the % by
-  usage (green <70, orange 70–90, red >90); the timer by time left, where soon =
-  green (relief coming) and a long wait = red. Columns are aligned across rows.
+- The `C`/`Cx` labels are white. The **usage %** and **reset timer** are colored
+  independently, with **white as the "best" tier**:
+  - usage %: white `<50` · green `50–75` · orange `75–90` · red `≥90`
+  - timer (time left): white `≤15m` · green `≤1h` · orange `≤3h` · red `>3h`
+  Columns are aligned across rows. (In the dropdown, the white tier renders as
+  the menu's default text color so it stays readable in light mode.)
 
 Both providers report **% used**, so they're directly comparable (Codex's API
 returns `used_percent`; the "% remaining" you may see elsewhere is just a display

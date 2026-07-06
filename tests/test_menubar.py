@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timezone
 from claude_usage import (
     menubar_rows, timer_color, next_check_label,
-    Usage, CodexUsage, GREEN, ORANGE, RED, GRAY,
+    Usage, CodexUsage, WHITE, GREEN, ORANGE, RED, GRAY,
 )
 
 NOW = datetime(2026, 6, 28, 7, 18, 0, tzinfo=timezone.utc)
@@ -12,8 +12,10 @@ CODEX = CodexUsage(95.0, "2026-06-28T09:00:00+00:00", 28.0, "2026-07-04T12:00:00
 
 
 class TestTimerColor(unittest.TestCase):
+    def test_imminent_is_white(self):
+        self.assertEqual(timer_color(10 * 60), WHITE)      # 10m left (best)
     def test_soon_is_green(self):
-        self.assertEqual(timer_color(20 * 60), GREEN)      # 20m left
+        self.assertEqual(timer_color(30 * 60), GREEN)      # 30m left
     def test_mid_is_orange(self):
         self.assertEqual(timer_color(2 * 3600), ORANGE)    # 2h left
     def test_far_is_red(self):
@@ -24,8 +26,8 @@ class TestMenubarRows(unittest.TestCase):
     def test_value_and_timer_colored_independently(self):
         rows = menubar_rows(CLAUDE, CODEX, NOW)
         c, x = rows
-        # Claude: 11% used -> green value; 3h12m left -> red timer (long wait)
-        self.assertEqual((c.label, c.value, c.value_color), ("C", "11%", GREEN))
+        # Claude: 11% used -> white value (best); 3h12m left -> red timer
+        self.assertEqual((c.label, c.value, c.value_color), ("C", "11%", WHITE))
         self.assertEqual((c.timer, c.timer_color), ("3h12m", RED))
         # Codex: 95% used -> red value; 1h42m left -> orange timer
         self.assertEqual((x.label, x.value, x.value_color), ("Cx", "95%", RED))

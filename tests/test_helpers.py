@@ -1,20 +1,24 @@
 import unittest
 from claude_usage import (
-    severity_color, format_duration, format_countdown, GREEN, ORANGE, RED,
+    severity_color, format_duration, format_countdown, WHITE, GREEN, ORANGE, RED,
 )
 
 
 class TestSeverityColor(unittest.TestCase):
-    def test_below_70_is_green(self):
-        self.assertEqual(severity_color(0), GREEN)
-        self.assertEqual(severity_color(69.9), GREEN)
+    def test_below_50_is_white(self):
+        self.assertEqual(severity_color(0), WHITE)
+        self.assertEqual(severity_color(49.9), WHITE)
 
-    def test_70_to_90_is_orange(self):
-        self.assertEqual(severity_color(70), ORANGE)
-        self.assertEqual(severity_color(90), ORANGE)
+    def test_50_to_75_is_green(self):
+        self.assertEqual(severity_color(50), GREEN)
+        self.assertEqual(severity_color(74.9), GREEN)
 
-    def test_above_90_is_red(self):
-        self.assertEqual(severity_color(90.1), RED)
+    def test_75_to_90_is_orange(self):
+        self.assertEqual(severity_color(75), ORANGE)
+        self.assertEqual(severity_color(89.9), ORANGE)
+
+    def test_90_plus_is_red(self):
+        self.assertEqual(severity_color(90), RED)
         self.assertEqual(severity_color(100), RED)
 
 

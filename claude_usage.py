@@ -30,6 +30,7 @@ OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 EXPIRY_SKEW_MS = 5 * 60 * 1000
 
+WHITE = "#ffffff"
 GREEN = "#34c759"
 ORANGE = "#ff9500"
 RED = "#ff3b30"
@@ -37,11 +38,13 @@ GRAY = "#8e8e93"
 
 
 def severity_color(pct: float) -> str:
-    if pct > 90:
+    if pct >= 90:
         return RED
-    if pct >= 70:
+    if pct >= 75:
         return ORANGE
-    return GREEN
+    if pct >= 50:
+        return GREEN
+    return WHITE  # best: plenty of headroom
 
 
 def format_duration(seconds: float, compact: bool) -> str:
@@ -151,13 +154,16 @@ def _has_reset(resets_at: Optional[str]) -> bool:
     return bool(resets_at) and resets_at != "None"
 
 
-# Timer color reflects time left until reset: soon = green (relief coming),
-# a long wait = red.
+# Timer color reflects time left until reset: the sooner it resets the better,
+# so a near-imminent reset is the "best" tier (white), a long wait is red.
+TIMER_BEST_MAX_S = 900      # <= 15m left -> white (best)
 TIMER_SOON_MAX_S = 3600     # <= 1h left  -> green
 TIMER_MID_MAX_S = 10800     # <= 3h left  -> orange; longer -> red
 
 
 def timer_color(seconds_left: float) -> str:
+    if seconds_left <= TIMER_BEST_MAX_S:
+        return WHITE
     if seconds_left <= TIMER_SOON_MAX_S:
         return GREEN
     if seconds_left <= TIMER_MID_MAX_S:
@@ -206,13 +212,18 @@ def next_check_label(now: datetime, interval_s: int) -> str:
     return "↻ " + nxt.strftime("%-I:%M:%S %p")
 
 
+def _colored(text: str, color: str) -> str:
+    # White is the "best" tier; in the dropdown, render it as the menu's default
+    # adaptive text color (a literal white would vanish on a light-mode menu).
+    return text if color == WHITE else f"{text} | color={color}"
+
+
 def _window_line(label: str, pct: float, resets_at: Optional[str],
                  now: datetime) -> str:
-    color = severity_color(pct)
-    if not _has_reset(resets_at):
-        return f"{label}  {_pct(pct)} | color={color}"
-    when = "resets in " + format_countdown(time_until(resets_at, now))
-    return f"{label}  {_pct(pct)}  ·  {when} | color={color}"
+    body = f"{label}  {_pct(pct)}"
+    if _has_reset(resets_at):
+        body += "  ·  resets in " + format_countdown(time_until(resets_at, now))
+    return _colored(body, severity_color(pct))
 
 
 _STALE_NOTE = "last reading (rate-limited or offline) | color=" + GRAY
@@ -337,7 +348,7 @@ var rows: [Row] = []
 for i in [0, 1] {
     let b = 1 + i * 5
     let hasTimer = !a[b+3].isEmpty
-    rows.append(Row(label: run(a[b], a[b+2]), value: run(a[b+1], a[b+2]),
+    rows.append(Row(label: run(a[b], "#ffffff"), value: run(a[b+1], a[b+2]),
                     timer: run(a[b+3], a[b+4]), hasTimer: hasTimer))
 }
 let sep = run("·", sepGray)
