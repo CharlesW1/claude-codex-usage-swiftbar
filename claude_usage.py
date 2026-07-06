@@ -140,28 +140,52 @@ def _has_reset(resets_at: Optional[str]) -> bool:
     return bool(resets_at) and resets_at != "None"
 
 
-def _bar_row(tag: str, pct: float, resets_at: Optional[str], now: datetime) -> Tuple[str, str]:
-    color = severity_color(pct)
+# Timer color reflects time left until reset: soon = green (relief coming),
+# a long wait = red.
+TIMER_SOON_MAX_S = 3600     # <= 1h left  -> green
+TIMER_MID_MAX_S = 10800     # <= 3h left  -> orange; longer -> red
+
+
+def timer_color(seconds_left: float) -> str:
+    if seconds_left <= TIMER_SOON_MAX_S:
+        return GREEN
+    if seconds_left <= TIMER_MID_MAX_S:
+        return ORANGE
+    return RED
+
+
+@dataclass
+class BarRow:
+    label: str           # "C" / "Cx"
+    value: str           # "44%" / "—"
+    value_color: str     # by usage severity
+    timer: str           # "2h0m" or "" when no active window
+    timer_color: str     # by time-left
+
+
+def _bar_row(tag: str, pct: float, resets_at: Optional[str], now: datetime) -> "BarRow":
     if _has_reset(resets_at):
-        left = format_duration(time_until(resets_at, now), compact=True)
-        return (f"{tag} {_pct(pct)} · {left}", color)
-    return (f"{tag} {_pct(pct)}", color)
+        secs = time_until(resets_at, now)
+        return BarRow(tag, _pct(pct), severity_color(pct),
+                      format_duration(secs, compact=True), timer_color(secs))
+    return BarRow(tag, _pct(pct), severity_color(pct), "", GRAY)
 
 
-def menubar_lines(
+def menubar_rows(
     claude: Optional["Usage"], codex: Optional["CodexUsage"], now: datetime
-) -> List[Tuple[str, str]]:
-    """Two stacked menu-bar rows (text, hex color): Claude 5h session over Codex
-    5h, each with its own time-until-reset."""
-    if claude is not None:
-        c_line = _bar_row("C", claude.session_pct, claude.session_resets_at, now)
-    else:
-        c_line = ("C —", GRAY)
-    if codex is not None:
-        x_line = _bar_row("Cx", codex.primary_pct, codex.primary_resets_at, now)
-    else:
-        x_line = ("Cx —", GRAY)
-    return [c_line, x_line]
+) -> List["BarRow"]:
+    """Two stacked rows: Claude 5h session over Codex 5h, each carrying an
+    independently-colored value and reset timer."""
+    c = _bar_row("C", claude.session_pct, claude.session_resets_at, now) \
+        if claude is not None else BarRow("C", "—", GRAY, "", GRAY)
+    x = _bar_row("Cx", codex.primary_pct, codex.primary_resets_at, now) \
+        if codex is not None else BarRow("Cx", "—", GRAY, "", GRAY)
+    return [c, x]
+
+
+def _bar_row_text(r: "BarRow") -> str:
+    """Plain-text form of a row for the no-Swift fallback menu bar."""
+    return f"{r.label} {r.value}" + (f" · {r.timer}" if r.timer else "")
 
 
 def next_check_label(now: datetime, interval_s: int) -> str:
@@ -284,36 +308,64 @@ func color(_ hex: String) -> NSColor {
                    blue: CGFloat(v & 0xff)/255.0, alpha: 1.0)
 }
 
+// Per row: label, value, valueColor, timer, timerColor  (2 rows = 10 args).
 let a = CommandLine.arguments
-guard a.count >= 5 else { exit(1) }
+guard a.count >= 11 else { exit(1) }
 let scale: CGFloat = CGFloat(Double(ProcessInfo.processInfo.environment["MB_SCALE"] ?? "3") ?? 3)
-let fontPt = CGFloat(Double(ProcessInfo.processInfo.environment["MB_FONT"] ?? "12") ?? 12)
+let fontPt = CGFloat(Double(ProcessInfo.processInfo.environment["MB_FONT"] ?? "9") ?? 9)
 let padX = CGFloat(Double(ProcessInfo.processInfo.environment["MB_PADX"] ?? "2") ?? 2)
-let padY = CGFloat(Double(ProcessInfo.processInfo.environment["MB_PADY"] ?? "1.5") ?? 1.5)
+let padY = CGFloat(Double(ProcessInfo.processInfo.environment["MB_PADY"] ?? "1") ?? 1)
 let gap  = CGFloat(Double(ProcessInfo.processInfo.environment["MB_GAP"] ?? "0") ?? 0)
 
-// Draw at scale× pixels for sharpness.
 let font = NSFont.systemFont(ofSize: fontPt * scale, weight: .medium)
-func line(_ s: String, _ hex: String) -> NSAttributedString {
+func run(_ s: String, _ hex: String) -> NSAttributedString {
     NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color(hex)])
 }
-let a1 = line(a[1], a[2]); let a2 = line(a[3], a[4])
-let lh = ceil(max(a1.size().height, a2.size().height))
-let pxW = ceil(max(a1.size().width, a2.size().width)) + padX * scale * 2
+
+struct Row { let label, value, timer: NSAttributedString; let hasTimer: Bool }
+let sepGray = "#8e8e93"
+var rows: [Row] = []
+for i in [0, 1] {
+    let b = 1 + i * 5
+    let hasTimer = !a[b+3].isEmpty
+    rows.append(Row(label: run(a[b], a[b+2]), value: run(a[b+1], a[b+2]),
+                    timer: run(a[b+3], a[b+4]), hasTimer: hasTimer))
+}
+let sep = run("·", sepGray)
+let spc = fontPt * scale * 0.30
+let sepW = sep.size().width
+let maxLabelW = rows.map { $0.label.size().width }.max() ?? 0
+let maxValueW = rows.map { $0.value.size().width }.max() ?? 0
+let maxTimerW = rows.map { $0.hasTimer ? $0.timer.size().width : 0 }.max() ?? 0
+let anyTimer = rows.contains { $0.hasTimer }
+let lh = ceil(rows.map { max($0.label.size().height, $0.value.size().height) }.max() ?? 0)
+
+let labelX = padX * scale
+let valueX = labelX + maxLabelW + spc
+let sepX = valueX + maxValueW + spc
+let timerX = sepX + sepW + spc
+let pxW = (anyTimer ? timerX + maxTimerW : valueX + maxValueW) + padX * scale
 let pxH = lh * 2 + gap * scale + padY * scale * 2
 
 guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(pxW),
         pixelsHigh: Int(pxH), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
         isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
 else { exit(1) }
-rep.size = NSSize(width: pxW, height: pxH)   // draw in pixel space
+rep.size = NSSize(width: pxW, height: pxH)
 NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-// origin bottom-left: line 2 on the bottom, line 1 on top
-a2.draw(at: NSPoint(x: padX * scale, y: padY * scale))
-a1.draw(at: NSPoint(x: padX * scale, y: padY * scale + lh + gap * scale))
+for (i, row) in rows.enumerated() {
+    // origin bottom-left: row 0 (Claude) on top, row 1 (Codex) on the bottom
+    let y = (i == 1) ? padY * scale : padY * scale + lh + gap * scale
+    row.label.draw(at: NSPoint(x: labelX, y: y))
+    row.value.draw(at: NSPoint(x: valueX, y: y))
+    if row.hasTimer {
+        sep.draw(at: NSPoint(x: sepX, y: y))
+        row.timer.draw(at: NSPoint(x: timerX, y: y))
+    }
+}
 NSGraphicsContext.restoreGraphicsState()
-// Tag the point size = pixels ÷ scale so it displays at ~bar height, Retina-crisp.
+// Tag point size = pixels ÷ scale so it displays at ~bar height, Retina-crisp.
 rep.size = NSSize(width: pxW / scale, height: pxH / scale)
 guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
 print(png.base64EncodedString())
@@ -345,18 +397,21 @@ def ensure_renderer() -> Optional[str]:
         return None
 
 
-def render_menubar_image(lines: List[Tuple[str, str]]) -> Optional[str]:
-    """Render the two stacked (text, color) rows to a base64 PNG, or None."""
+def render_menubar_image(rows: List["BarRow"]) -> Optional[str]:
+    """Render the two stacked rows (aligned, independently-colored value + timer)
+    to a base64 PNG, or None if Swift is unavailable."""
     binp = ensure_renderer()
-    if not binp or len(lines) < 2:
+    if not binp or len(rows) < 2:
         return None
-    (t1, c1), (t2, c2) = lines[0], lines[1]
+    args = []
+    for r in rows[:2]:
+        args += [r.label, r.value, r.value_color, r.timer, r.timer_color]
     env = dict(os.environ,
                MB_SCALE=str(_MENUBAR_SCALE), MB_FONT=str(_MENUBAR_FONT_PT),
                MB_PADX=str(_MENUBAR_PAD_X), MB_PADY=str(_MENUBAR_PAD_Y),
                MB_GAP=str(_MENUBAR_LINE_GAP))
     try:
-        r = subprocess.run([binp, t1, c1, t2, c2], env=env,
+        r = subprocess.run([binp] + args, env=env,
                            capture_output=True, text=True, timeout=15)
         if r.returncode != 0 or not r.stdout.strip():
             return None
@@ -653,16 +708,15 @@ def _detect_interval() -> int:
     return int(m.group(1)) if m else 300
 
 
-def assemble_output(claude, codex, now, interval_s, stale_c, stale_x,
+def assemble_output(rows, claude, codex, now, interval_s, stale_c, stale_x,
                     note_c, note_x, image_b64,
                     boost_remaining=None, cli=None) -> str:
     """Pure: build the SwiftBar output (menu-bar line + dropdown). The next-check
     time lives only in the dropdown; the menu bar shows just the image."""
-    lines = menubar_lines(claude, codex, now)
     if image_b64:
         first = f"| image={image_b64}"
     else:  # graceful fallback when Swift rendering is unavailable
-        first = " · ".join(t for t, _ in lines)
+        first = " · ".join(_bar_row_text(r) for r in rows)
     dropdown = render_dropdown(claude, codex, now, interval_s, stale_c, stale_x,
                                note_c, note_x, boost_remaining, cli)
     return first + "\n" + dropdown
@@ -742,9 +796,10 @@ def build_output(now: datetime, interval_s: Optional[int] = None) -> str:
     effective = BOOST_INTERVAL_S if boost_rem else base
     claude, stale_c, note_c = _get_claude(now_ms)
     codex, stale_x, note_x = _get_codex(now_ms)
-    image_b64 = render_menubar_image(menubar_lines(claude, codex, now))
+    rows = menubar_rows(claude, codex, now)
+    image_b64 = render_menubar_image(rows)
     cli = (sys.executable, os.path.abspath(__file__))
-    return assemble_output(claude, codex, now, effective, stale_c, stale_x,
+    return assemble_output(rows, claude, codex, now, effective, stale_c, stale_x,
                            note_c, note_x, image_b64, boost_rem, cli)
 
 

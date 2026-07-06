@@ -1,41 +1,51 @@
 import unittest
 from datetime import datetime, timezone
 from claude_usage import (
-    menubar_lines, next_check_label, Usage, CodexUsage, GREEN, RED, GRAY,
+    menubar_rows, timer_color, next_check_label,
+    Usage, CodexUsage, GREEN, ORANGE, RED, GRAY,
 )
 
 NOW = datetime(2026, 6, 28, 7, 18, 0, tzinfo=timezone.utc)
+# Claude 5h resets 10:30 (3h12m out); Codex 5h resets 09:00 (1h42m out).
 CLAUDE = Usage(11.0, "2026-06-28T10:30:00+00:00", 43.0, "2026-07-04T12:00:00+00:00")
 CODEX = CodexUsage(95.0, "2026-06-28T09:00:00+00:00", 28.0, "2026-07-04T12:00:00+00:00")
 
 
-class TestMenubarLines(unittest.TestCase):
-    def test_two_lines_with_reset_and_color(self):
-        lines = menubar_lines(CLAUDE, CODEX, NOW)
-        self.assertEqual(lines[0], ("C 11% · 3h12m", GREEN))
-        self.assertEqual(lines[1], ("Cx 95% · 1h42m", RED))
+class TestTimerColor(unittest.TestCase):
+    def test_soon_is_green(self):
+        self.assertEqual(timer_color(20 * 60), GREEN)      # 20m left
+    def test_mid_is_orange(self):
+        self.assertEqual(timer_color(2 * 3600), ORANGE)    # 2h left
+    def test_far_is_red(self):
+        self.assertEqual(timer_color(4 * 3600), RED)       # 4h left
 
-    def test_missing_reset_omits_time(self):
+
+class TestMenubarRows(unittest.TestCase):
+    def test_value_and_timer_colored_independently(self):
+        rows = menubar_rows(CLAUDE, CODEX, NOW)
+        c, x = rows
+        # Claude: 11% used -> green value; 3h12m left -> red timer (long wait)
+        self.assertEqual((c.label, c.value, c.value_color), ("C", "11%", GREEN))
+        self.assertEqual((c.timer, c.timer_color), ("3h12m", RED))
+        # Codex: 95% used -> red value; 1h42m left -> orange timer
+        self.assertEqual((x.label, x.value, x.value_color), ("Cx", "95%", RED))
+        self.assertEqual((x.timer, x.timer_color), ("1h42m", ORANGE))
+
+    def test_missing_reset_has_empty_timer(self):
         claude = Usage(0.0, None, 43.0, "2026-07-04T12:00:00+00:00")
-        lines = menubar_lines(claude, CODEX, NOW)
-        self.assertEqual(lines[0], ("C 0%", GREEN))
+        c = menubar_rows(claude, CODEX, NOW)[0]
+        self.assertEqual(c.value, "0%")
+        self.assertEqual(c.timer, "")
 
-    def test_missing_provider_shows_dash_gray(self):
-        lines = menubar_lines(CLAUDE, None, NOW)
-        self.assertEqual(lines[0], ("C 11% · 3h12m", GREEN))
-        self.assertEqual(lines[1], ("Cx —", GRAY))
-
-    def test_both_missing(self):
-        lines = menubar_lines(None, None, NOW)
-        self.assertEqual(lines[0][0], "C —")
-        self.assertEqual(lines[1][0], "Cx —")
+    def test_missing_provider_is_dash(self):
+        rows = menubar_rows(CLAUDE, None, NOW)
+        self.assertEqual((rows[1].label, rows[1].value, rows[1].value_color),
+                         ("Cx", "—", GRAY))
 
 
 class TestNextCheckLabel(unittest.TestCase):
     def test_shows_local_clock_time_of_next_run(self):
-        now = datetime(2026, 6, 28, 10, 19, 0, tzinfo=timezone.utc)
-        label = next_check_label(now, 300)
-        # 5 minutes after now, formatted as H:MM (local tz); just assert shape
+        label = next_check_label(NOW, 300)
         self.assertRegex(label, r"↻ \d{1,2}:\d{2}")
 
 
