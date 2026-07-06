@@ -232,13 +232,15 @@ def fetch_usage(token: str) -> dict:
 RENDERER_BIN = os.path.expanduser("~/.cache/claude-usage/menubar_render")
 RENDERER_SRC = os.path.expanduser("~/.cache/claude-usage/menubar_render.swift")
 
-# Sizing knobs (points, @1x — SwiftBar scales the image to the menu-bar height,
-# so FONT_PT vs. PAD_Y sets how much of the bar height the two lines occupy).
-_MENUBAR_FONT_PT = 12.0
+# Sizing knobs. SwiftBar shows the image at its POINT size (pixels ÷ scale via
+# the PNG's encoded resolution), so _MENUBAR_FONT_PT is the on-screen point size
+# per line — set it to match neighboring stacked menu-bar items (~9pt each).
+# _MENUBAR_SCALE only adds Retina sharpness; it does not change displayed size.
+_MENUBAR_FONT_PT = 9.0
 _MENUBAR_PAD_X = 2.0
-_MENUBAR_PAD_Y = 1.5
+_MENUBAR_PAD_Y = 1.0
 _MENUBAR_LINE_GAP = 0.0
-_MENUBAR_SCALE = 3  # render @3x for crisp Retina downscaling
+_MENUBAR_SCALE = 3  # render @3x, then tag the PNG so it displays at 1x points
 
 # Kept in a string (not a sibling file) so SwiftBar's plugin folder stays clean —
 # a stray .swift there would be run as a broken plugin.
@@ -262,26 +264,29 @@ let padX = CGFloat(Double(ProcessInfo.processInfo.environment["MB_PADX"] ?? "2")
 let padY = CGFloat(Double(ProcessInfo.processInfo.environment["MB_PADY"] ?? "1.5") ?? 1.5)
 let gap  = CGFloat(Double(ProcessInfo.processInfo.environment["MB_GAP"] ?? "0") ?? 0)
 
+// Draw at scale× pixels for sharpness.
 let font = NSFont.systemFont(ofSize: fontPt * scale, weight: .medium)
 func line(_ s: String, _ hex: String) -> NSAttributedString {
     NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color(hex)])
 }
 let a1 = line(a[1], a[2]); let a2 = line(a[3], a[4])
 let lh = ceil(max(a1.size().height, a2.size().height))
-let w = ceil(max(a1.size().width, a2.size().width)) + padX * scale * 2
-let h = lh * 2 + gap * scale + padY * scale * 2
+let pxW = ceil(max(a1.size().width, a2.size().width)) + padX * scale * 2
+let pxH = lh * 2 + gap * scale + padY * scale * 2
 
-guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w),
-        pixelsHigh: Int(h), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(pxW),
+        pixelsHigh: Int(pxH), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
         isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
 else { exit(1) }
-rep.size = NSSize(width: w, height: h)
+rep.size = NSSize(width: pxW, height: pxH)   // draw in pixel space
 NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
 // origin bottom-left: line 2 on the bottom, line 1 on top
 a2.draw(at: NSPoint(x: padX * scale, y: padY * scale))
 a1.draw(at: NSPoint(x: padX * scale, y: padY * scale + lh + gap * scale))
 NSGraphicsContext.restoreGraphicsState()
+// Tag the point size = pixels ÷ scale so it displays at ~bar height, Retina-crisp.
+rep.size = NSSize(width: pxW / scale, height: pxH / scale)
 guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
 print(png.base64EncodedString())
 '''
