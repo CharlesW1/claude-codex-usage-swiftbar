@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -20,6 +21,9 @@ CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last.json")
 CODEX_CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last_codex.json")
 CREDS_PATH = os.path.expanduser("~/.cache/claude-usage/creds.json")
+BOOST_UNTIL_PATH = os.path.expanduser("~/.cache/claude-usage/boost_until")
+BOOST_LOCK_PATH = os.path.expanduser("~/.cache/claude-usage/boost.lock")
+BOOST_INTERVAL_S = 60
 
 # Claude Code's public OAuth client; refresh proactively this far before expiry.
 OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
@@ -47,6 +51,8 @@ def format_duration(seconds: float, compact: bool) -> str:
     hours, minutes = divmod(total_minutes, 60)
     if hours == 0:
         return f"{minutes}m"
+    if minutes == 0:
+        return f"{hours}h"
     sep = "" if compact else " "
     return f"{hours}h{sep}{minutes}m"
 
@@ -134,16 +140,25 @@ def _has_reset(resets_at: Optional[str]) -> bool:
     return bool(resets_at) and resets_at != "None"
 
 
+def _bar_row(tag: str, pct: float, resets_at: Optional[str], now: datetime) -> Tuple[str, str]:
+    color = severity_color(pct)
+    if _has_reset(resets_at):
+        left = format_duration(time_until(resets_at, now), compact=True)
+        return (f"{tag} {_pct(pct)} · {left}", color)
+    return (f"{tag} {_pct(pct)}", color)
+
+
 def menubar_lines(
-    claude: Optional["Usage"], codex: Optional["CodexUsage"]
+    claude: Optional["Usage"], codex: Optional["CodexUsage"], now: datetime
 ) -> List[Tuple[str, str]]:
-    """Two stacked menu-bar rows (text, hex color): Claude session over Codex 5h."""
+    """Two stacked menu-bar rows (text, hex color): Claude 5h session over Codex
+    5h, each with its own time-until-reset."""
     if claude is not None:
-        c_line = (f"C {_pct(claude.session_pct)}", severity_color(claude.session_pct))
+        c_line = _bar_row("C", claude.session_pct, claude.session_resets_at, now)
     else:
         c_line = ("C —", GRAY)
     if codex is not None:
-        x_line = (f"Cx {_pct(codex.primary_pct)}", severity_color(codex.primary_pct))
+        x_line = _bar_row("Cx", codex.primary_pct, codex.primary_resets_at, now)
     else:
         x_line = ("Cx —", GRAY)
     return [c_line, x_line]
@@ -175,6 +190,7 @@ def render_dropdown(
     now: datetime, interval_s: int,
     stale_claude: bool = False, stale_codex: bool = False,
     claude_note: Optional[str] = None, codex_note: Optional[str] = None,
+    boost_remaining: Optional[int] = None, cli: Optional[Tuple[str, str]] = None,
 ) -> str:
     lines = ["---", "Claude | color=" + GRAY]
     if claude is not None:
@@ -198,12 +214,24 @@ def render_dropdown(
     else:
         lines.append((codex_note or "unavailable") + " | color=" + GRAY)
 
-    lines += [
-        "---",
-        f"{next_check_label(now, interval_s)} · next check (every {interval_s // 60}m) | color={GRAY}",
-        "Refresh | refresh=true",
-        "Claude /usage · Codex /status for details | color=" + GRAY,
-    ]
+    lines.append("---")
+    if boost_remaining:
+        ends = (now + timedelta(seconds=boost_remaining)).astimezone().strftime("%-I:%M")
+        lines.append(f"{next_check_label(now, interval_s)} · next check "
+                     f"(boosted to 1m, until {ends}) | color={GRAY}")
+    else:
+        lines.append(f"{next_check_label(now, interval_s)} · next check "
+                     f"(every {interval_s // 60}m) | color={GRAY}")
+    lines.append("Refresh now | refresh=true")
+    if cli is not None:
+        py, mod = cli
+        if boost_remaining:
+            lines.append(f'Stop 1-minute boost | bash="{py}" param1="{mod}" '
+                         f'param2="stop" terminal=false refresh=true')
+        else:
+            lines.append(f'Refresh every 1 min for 30 min | bash="{py}" param1="{mod}" '
+                         f'param2="boost" terminal=false refresh=true')
+    lines.append("Claude /usage · Codex /status for details | color=" + GRAY)
     return "\n".join(lines)
 
 
@@ -626,28 +654,98 @@ def _detect_interval() -> int:
 
 
 def assemble_output(claude, codex, now, interval_s, stale_c, stale_x,
-                    note_c, note_x, image_b64) -> str:
-    """Pure: build the SwiftBar output (menu-bar line + dropdown)."""
-    lines = menubar_lines(claude, codex)
-    nxt = next_check_label(now, interval_s)
+                    note_c, note_x, image_b64,
+                    boost_remaining=None, cli=None) -> str:
+    """Pure: build the SwiftBar output (menu-bar line + dropdown). The next-check
+    time lives only in the dropdown; the menu bar shows just the image."""
+    lines = menubar_lines(claude, codex, now)
     if image_b64:
-        first = f"{nxt} | image={image_b64}"
+        first = f"| image={image_b64}"
     else:  # graceful fallback when Swift rendering is unavailable
-        first = " · ".join(t for t, _ in lines) + f"  {nxt}"
-    dropdown = render_dropdown(claude, codex, now, interval_s,
-                               stale_c, stale_x, note_c, note_x)
+        first = " · ".join(t for t, _ in lines)
+    dropdown = render_dropdown(claude, codex, now, interval_s, stale_c, stale_x,
+                               note_c, note_x, boost_remaining, cli)
     return first + "\n" + dropdown
 
 
+# ---- temporary "boost" (1-minute refresh for 30 minutes) --------------------
+
+def _boost_read_until() -> float:
+    try:
+        with open(BOOST_UNTIL_PATH) as f:
+            return float(f.read().strip())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def boost_remaining(now_epoch: float) -> Optional[int]:
+    rem = _boost_read_until() - now_epoch
+    return int(rem) if rem > 0 else None
+
+
+def _boost_lock_alive() -> bool:
+    try:
+        with open(BOOST_LOCK_PATH) as f:
+            os.kill(int(f.read().strip()), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _swiftbar_refresh() -> None:
+    try:
+        subprocess.run(["open", "-g", "swiftbar://refreshallplugins"],
+                       capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def boost_start(minutes: int = 30) -> None:
+    os.makedirs(os.path.dirname(BOOST_UNTIL_PATH), exist_ok=True)
+    with open(BOOST_UNTIL_PATH, "w") as f:
+        f.write(str(time.time() + minutes * 60))
+    _swiftbar_refresh()
+    if not _boost_lock_alive():
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "_boostloop"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+
+def boost_stop() -> None:
+    try:
+        os.remove(BOOST_UNTIL_PATH)
+    except OSError:
+        pass
+    _swiftbar_refresh()
+
+
+def boost_loop() -> None:
+    with open(BOOST_LOCK_PATH, "w") as f:
+        f.write(str(os.getpid()))
+    try:
+        while time.time() < _boost_read_until():
+            time.sleep(BOOST_INTERVAL_S)
+            _swiftbar_refresh()
+    finally:
+        try:
+            os.remove(BOOST_LOCK_PATH)
+        except OSError:
+            pass
+
+
 def build_output(now: datetime, interval_s: Optional[int] = None) -> str:
-    if interval_s is None:
-        interval_s = _detect_interval()
+    base = interval_s if interval_s is not None else _detect_interval()
     now_ms = int(now.timestamp() * 1000)
+    boost_rem = boost_remaining(now.timestamp())
+    effective = BOOST_INTERVAL_S if boost_rem else base
     claude, stale_c, note_c = _get_claude(now_ms)
     codex, stale_x, note_x = _get_codex(now_ms)
-    image_b64 = render_menubar_image(menubar_lines(claude, codex))
-    return assemble_output(claude, codex, now, interval_s,
-                           stale_c, stale_x, note_c, note_x, image_b64)
+    image_b64 = render_menubar_image(menubar_lines(claude, codex, now))
+    cli = (sys.executable, os.path.abspath(__file__))
+    return assemble_output(claude, codex, now, effective, stale_c, stale_x,
+                           note_c, note_x, image_b64, boost_rem, cli)
 
 
 def main() -> None:
@@ -655,4 +753,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    _cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if _cmd == "boost":
+        boost_start()
+    elif _cmd == "stop":
+        boost_stop()
+    elif _cmd == "_boostloop":
+        boost_loop()
+    else:
+        main()

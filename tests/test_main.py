@@ -24,11 +24,12 @@ class BuildBase(unittest.TestCase):
         self._orig = {}
         for name in ("current_token", "fetch_usage", "read_codex_creds",
                      "fetch_codex", "render_menubar_image", "CACHE_PATH",
-                     "CODEX_CACHE_PATH"):
+                     "CODEX_CACHE_PATH", "BOOST_UNTIL_PATH"):
             self._orig[name] = getattr(claude_usage, name)
         tmp = tempfile.mkdtemp()
         claude_usage.CACHE_PATH = os.path.join(tmp, "claude.json")
         claude_usage.CODEX_CACHE_PATH = os.path.join(tmp, "codex.json")
+        claude_usage.BOOST_UNTIL_PATH = os.path.join(tmp, "boost")
         # Force text fallback (no Swift) so the menu-bar line is deterministic.
         claude_usage.render_menubar_image = lambda lines: None
 
@@ -47,7 +48,8 @@ class TestBothProviders(BuildBase):
         first = out.splitlines()[0]
         self.assertIn("C 46%", first)
         self.assertIn("Cx 50%", first)
-        self.assertIn("↻", first)
+        self.assertNotIn("↻", first)          # next-check moved into the menu
+        self.assertIn("↻", out)               # ...and is present in the dropdown
         self.assertIn("Session (5h)  46%", out)
         self.assertIn("5-hour  50%", out)
 

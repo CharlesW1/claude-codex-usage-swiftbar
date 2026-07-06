@@ -4,23 +4,29 @@ from claude_usage import (
     menubar_lines, next_check_label, Usage, CodexUsage, GREEN, RED, GRAY,
 )
 
+NOW = datetime(2026, 6, 28, 7, 18, 0, tzinfo=timezone.utc)
 CLAUDE = Usage(11.0, "2026-06-28T10:30:00+00:00", 43.0, "2026-07-04T12:00:00+00:00")
 CODEX = CodexUsage(95.0, "2026-06-28T09:00:00+00:00", 28.0, "2026-07-04T12:00:00+00:00")
 
 
 class TestMenubarLines(unittest.TestCase):
-    def test_two_lines_labeled_and_colored(self):
-        lines = menubar_lines(CLAUDE, CODEX)
-        self.assertEqual(lines[0], ("C 11%", GREEN))
-        self.assertEqual(lines[1], ("Cx 95%", RED))
+    def test_two_lines_with_reset_and_color(self):
+        lines = menubar_lines(CLAUDE, CODEX, NOW)
+        self.assertEqual(lines[0], ("C 11% · 3h12m", GREEN))
+        self.assertEqual(lines[1], ("Cx 95% · 1h42m", RED))
+
+    def test_missing_reset_omits_time(self):
+        claude = Usage(0.0, None, 43.0, "2026-07-04T12:00:00+00:00")
+        lines = menubar_lines(claude, CODEX, NOW)
+        self.assertEqual(lines[0], ("C 0%", GREEN))
 
     def test_missing_provider_shows_dash_gray(self):
-        lines = menubar_lines(CLAUDE, None)
-        self.assertEqual(lines[0], ("C 11%", GREEN))
+        lines = menubar_lines(CLAUDE, None, NOW)
+        self.assertEqual(lines[0], ("C 11% · 3h12m", GREEN))
         self.assertEqual(lines[1], ("Cx —", GRAY))
 
     def test_both_missing(self):
-        lines = menubar_lines(None, None)
+        lines = menubar_lines(None, None, NOW)
         self.assertEqual(lines[0][0], "C —")
         self.assertEqual(lines[1][0], "Cx —")
 

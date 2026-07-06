@@ -18,11 +18,12 @@ class CacheBase(unittest.TestCase):
         self._orig = {}
         for name in ("current_token", "fetch_usage", "read_codex_creds",
                      "fetch_codex", "render_menubar_image", "CACHE_PATH",
-                     "CODEX_CACHE_PATH"):
+                     "CODEX_CACHE_PATH", "BOOST_UNTIL_PATH"):
             self._orig[name] = getattr(claude_usage, name)
         tmp = tempfile.mkdtemp()
         claude_usage.CACHE_PATH = os.path.join(tmp, "claude.json")
         claude_usage.CODEX_CACHE_PATH = os.path.join(tmp, "codex.json")
+        claude_usage.BOOST_UNTIL_PATH = os.path.join(tmp, "boost")
         claude_usage.render_menubar_image = lambda lines: None
 
     def tearDown(self):

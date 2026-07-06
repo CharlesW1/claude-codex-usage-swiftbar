@@ -20,7 +20,18 @@ class TestRenderDropdown(unittest.TestCase):
     def test_next_check_and_refresh_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)
         self.assertRegex(out, r"↻ \d{1,2}:\d{2} · next check \(every 5m\)")
-        self.assertIn("Refresh | refresh=true", out)
+        self.assertIn("Refresh now | refresh=true", out)
+
+    def test_boost_control_present_when_cli_given(self):
+        out = render_dropdown(CLAUDE, CODEX, NOW, 300, cli=("/py", "/mod.py"))
+        self.assertIn("Refresh every 1 min for 30 min", out)
+        self.assertIn('param2="boost"', out)
+
+    def test_boost_active_shows_stop_and_countdown(self):
+        out = render_dropdown(CLAUDE, CODEX, NOW, 60, boost_remaining=600,
+                              cli=("/py", "/mod.py"))
+        self.assertIn("boosted to 1m", out)
+        self.assertIn("Stop 1-minute boost", out)
 
     def test_missing_codex_shows_note(self):
         out = render_dropdown(CLAUDE, None, NOW, 300, codex_note="signed out")

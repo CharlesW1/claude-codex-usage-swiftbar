@@ -4,18 +4,29 @@ Shows **Claude** and **Codex** usage side-by-side in the macOS menu bar, as two
 stacked colored lines:
 
 ```
-C 11%      ↻ 3:24
-Cx 50%
+C 11% · 3h12m
+Cx 50% · 1h40m
 ```
 
-- **Top line (`C`)** — Claude Code's 5-hour session usage (the `/usage` number).
-- **Bottom line (`Cx`)** — Codex's 5-hour usage (`/status`).
+- **Top line (`C`)** — Claude Code's 5-hour session usage (the `/usage` number)
+  and the time until that window resets.
+- **Bottom line (`Cx`)** — Codex's 5-hour usage (`/status`) and its reset.
 - Each line is colored green / orange / red as it approaches the limit.
-- **`↻ 3:24`** next to the image is the clock time of the next refresh.
 
 Both providers report **% used**, so they're directly comparable (Codex's API
 returns `used_percent`; the "% remaining" you may see elsewhere is just a display
-choice). Click for per-window detail, reset times, and a manual Refresh.
+choice). Click for per-window detail, weekly limits, reset times, and controls.
+
+### Menu (dropdown) controls
+
+- **`↻ H:MM · next check`** — clock time of the next scheduled refresh.
+- **Refresh now** — refresh immediately.
+- **Refresh every 1 min for 30 min** — temporarily polls every minute for 30
+  minutes (handy when you're close to a limit and want a live view), then
+  reverts to the normal interval. While active it shows **Stop 1-minute boost**.
+  (Implemented by a small background loop that pings
+  `swiftbar://refreshallplugins` each minute; SwiftBar's own interval is fixed by
+  the filename.)
 
 ## Install
 
