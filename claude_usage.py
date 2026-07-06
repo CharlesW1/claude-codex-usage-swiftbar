@@ -189,9 +189,10 @@ def _bar_row_text(r: "BarRow") -> str:
 
 
 def next_check_label(now: datetime, interval_s: int) -> str:
-    """Clock time of the next scheduled refresh, in local time (e.g. '↻ 3:24')."""
+    """Full local clock time of the next scheduled refresh, with seconds and
+    AM/PM (e.g. '↻ 1:33:24 PM')."""
     nxt = (now + timedelta(seconds=interval_s)).astimezone()
-    return "↻ " + nxt.strftime("%-I:%M")
+    return "↻ " + nxt.strftime("%-I:%M:%S %p")
 
 
 def _window_line(label: str, pct: float, resets_at: Optional[str],
@@ -240,7 +241,7 @@ def render_dropdown(
 
     lines.append("---")
     if boost_remaining:
-        ends = (now + timedelta(seconds=boost_remaining)).astimezone().strftime("%-I:%M")
+        ends = (now + timedelta(seconds=boost_remaining)).astimezone().strftime("%-I:%M:%S %p")
         lines.append(f"{next_check_label(now, interval_s)} · next check "
                      f"(boosted to 1m, until {ends}) | color={GRAY}")
     else:

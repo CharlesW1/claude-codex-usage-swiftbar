@@ -46,7 +46,7 @@ class TestMenubarRows(unittest.TestCase):
 class TestNextCheckLabel(unittest.TestCase):
     def test_shows_local_clock_time_of_next_run(self):
         label = next_check_label(NOW, 300)
-        self.assertRegex(label, r"↻ \d{1,2}:\d{2}")
+        self.assertRegex(label, r"↻ \d{1,2}:\d{2}:\d{2} (AM|PM)")
 
 
 if __name__ == "__main__":

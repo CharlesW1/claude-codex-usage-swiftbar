@@ -19,7 +19,7 @@ class TestRenderDropdown(unittest.TestCase):
 
     def test_next_check_and_refresh_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)
-        self.assertRegex(out, r"↻ \d{1,2}:\d{2} · next check \(every 5m\)")
+        self.assertRegex(out, r"↻ \d{1,2}:\d{2}:\d{2} (AM|PM) · next check \(every 5m\)")
         self.assertIn("Refresh now | refresh=true", out)
 
     def test_boost_control_present_when_cli_given(self):
