@@ -11,12 +11,13 @@ class TestRenderDropdown(unittest.TestCase):
     def test_both_providers_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)
         self.assertIn("Claude | color=#8e8e93", out)
-        # Claude 11% / 43% are the white "best" tier -> no color param (adaptive)
+        # Dropdown data lines carry no status color (default menu text).
         self.assertIn("5-hour  11%  ·  resets in 3h 12m\n", out + "\n")
         self.assertIn("Weekly  43%  ·  resets in 6d 4h\n", out + "\n")
         self.assertIn("Codex | color=#8e8e93", out)
-        self.assertIn("5-hour  50%  ·  resets in 1h 42m | color=#34c759", out)  # 50% green
+        self.assertIn("5-hour  50%  ·  resets in 1h 42m\n", out + "\n")
         self.assertIn("Weekly  28%  ·  resets in 6d 4h\n", out + "\n")
+        self.assertNotIn("resets in 3h 12m | color=", out)  # no per-line color
 
     def test_next_check_and_refresh_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)

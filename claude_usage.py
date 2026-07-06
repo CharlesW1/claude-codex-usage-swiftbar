@@ -212,18 +212,14 @@ def next_check_label(now: datetime, interval_s: int) -> str:
     return "↻ " + nxt.strftime("%-I:%M:%S %p")
 
 
-def _colored(text: str, color: str) -> str:
-    # White is the "best" tier; in the dropdown, render it as the menu's default
-    # adaptive text color (a literal white would vanish on a light-mode menu).
-    return text if color == WHITE else f"{text} | color={color}"
-
-
 def _window_line(label: str, pct: float, resets_at: Optional[str],
                  now: datetime) -> str:
+    # No status color in the dropdown — it's hard to read on the translucent
+    # menu; the color coding lives only in the menu-bar image. Default text color.
     body = f"{label}  {_pct(pct)}"
     if _has_reset(resets_at):
         body += "  ·  resets in " + format_countdown(time_until(resets_at, now))
-    return _colored(body, severity_color(pct))
+    return body
 
 
 _STALE_NOTE = "last reading (rate-limited or offline) | color=" + GRAY
