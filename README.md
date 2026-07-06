@@ -1,109 +1,191 @@
-# Claude + Codex Usage — SwiftBar plugin
+# Claude + Codex Usage SwiftBar
 
-Shows **Claude** and **Codex** usage side-by-side in the macOS menu bar, as two
-stacked colored lines:
+A macOS [SwiftBar](https://swiftbar.app/) plugin that shows **Claude Code** and
+**OpenAI Codex** usage as two stacked, color-coded lines in the menu bar, with a
+clickable dropdown for per-window detail and refresh controls.
 
+![Generated menu-bar sample](assets/menu-bar-sample.png)
+
+![Generated dropdown sample](assets/dropdown-sample.png)
+
+The top line is Claude Code (`C`). The bottom line is Codex (`Cx`):
+
+```text
+C  85% · 3h11m
+Cx 52% · 14m
 ```
-C 11% · 3h12m
-Cx 50% · 1h40m
-```
 
-- **Top line (`C`)** — Claude Code's 5-hour session usage (the `/usage` number)
-  and the time until that window resets.
-- **Bottom line (`Cx`)** — Codex's 5-hour usage (`/status`) and its reset.
-- The `C`/`Cx` labels are white. The **usage %** and **reset timer** are colored
-  independently, with **white as the "best" tier**:
-  - usage %: white `<50` · green `50–75` · orange `75–90` · red `≥90`
-  - timer (time left): white `≤15m` · green `≤1h` · orange `≤3h` · red `>3h`
-  Columns are aligned across rows. (In the dropdown, the white tier renders as
-  the menu's default text color so it stays readable in light mode.)
+Both providers are shown as **percent used**, so the numbers are directly
+comparable.
 
-Both providers report **% used**, so they're directly comparable (Codex's API
-returns `used_percent`; the "% remaining" you may see elsewhere is just a display
-choice). Click for per-window detail, weekly limits, reset times, and controls.
+## Dependencies
 
-### Menu (dropdown) controls
+- macOS
+- SwiftBar: `brew install --cask swiftbar`
+- Xcode Command Line Tools, including `swiftc`: `xcode-select --install`
+- Python 3.9 or newer
+- No Python packages: `claude_usage.py` uses the Python standard library only
+- Claude Code and/or Codex signed in locally
 
-- **`↻ H:MM · next check`** — clock time of the next scheduled refresh.
-- **Refresh now** — refresh immediately.
-- **Refresh every 1 min for 30 min** — temporarily polls every minute for 30
-  minutes (handy when you're close to a limit and want a live view), then
-  reverts to the normal interval. While active it shows **Stop 1-minute boost**.
-  (Implemented by a small background loop that pings
-  `swiftbar://refreshallplugins` each minute; SwiftBar's own interval is fixed by
-  the filename.)
+The plugin still works if only one provider is signed in; the other row shows an
+unavailable state.
 
 ## Install
 
-1. Install SwiftBar: `brew install --cask swiftbar`
-2. Launch SwiftBar and pick a plugin folder when prompted.
-3. Point SwiftBar at a folder that contains **only** the plugin files. Do **not**
-   point it at this git repo — SwiftBar runs every file it finds (recursively),
-   so docs/tests show up as broken `[?]` plugins. A clean way to keep edits live
-   is a dedicated folder with symlinks back here:
+1. Install SwiftBar:
+
    ```bash
-   mkdir -p ~/swiftbar-plugins
-   ln -sf "$PWD/claude-usage.300s.py"  ~/swiftbar-plugins/claude-usage.300s.py
-   ln -sf "$PWD/claude_usage.py"       ~/swiftbar-plugins/claude_usage.py
+   brew install --cask swiftbar
    ```
-   (Only these two files — the Swift renderer is embedded in `claude_usage.py`,
-   so nothing else belongs in the plugin folder.)
-   Then in SwiftBar → Preferences set the plugin folder to `~/swiftbar-plugins`.
-4. In SwiftBar, choose **Refresh All**. On first run macOS shows a Keychain
-   prompt for `Claude Code-credentials` — click **Always Allow**. The first run
-   also compiles the Swift renderer (~1–2 s); later runs reuse the cached binary.
 
-Refreshes every 5 minutes (the `.300s.` in the filename). A short interval can
-trip the usage endpoints' rate limits; 5 minutes is a safe default. Rename to
-`.120s.` / `.60s.` etc. to change it.
+2. Install Xcode Command Line Tools if `swiftc` is not available:
 
-**Requirements:** macOS with `swiftc` (Xcode command line tools) for the stacked
-image; Claude Code and/or Codex signed in. If Swift is unavailable the plugin
-falls back to a plain-text menu bar (`C 11% · Cx 50%  ↻ 3:24`).
+   ```bash
+   xcode-select --install
+   ```
 
-## How it works
+3. Create a dedicated SwiftBar plugin folder that contains **only** the two
+   plugin files. Do not point SwiftBar at this git repo, because SwiftBar runs
+   every file it finds recursively.
 
-Each run fetches both providers independently; one being signed out or offline
-never blocks the other.
+   From this repo:
 
-**Claude** — reads the OAuth token from the Keychain (`Claude Code-credentials`)
-and calls `GET https://api.anthropic.com/api/oauth/usage`. If the access token is
-expired (or within 5 min of expiry), the plugin uses the stored `refreshToken` to
-mint a fresh one via Claude's OAuth endpoint and writes it back to the Keychain —
-exactly like Claude Code does — so it stays fresh even if you only use the Claude
-desktop app. The rotated token is mirrored to `~/.cache/claude-usage/creds.json`
-(mode 600); whichever of Keychain/cache has the later expiry wins.
+   ```bash
+   mkdir -p ~/swiftbar-plugins/claude-codex-usage
+   ln -sf "$PWD/claude-usage.300s.py" ~/swiftbar-plugins/claude-codex-usage/claude-usage.300s.py
+   ln -sf "$PWD/claude_usage.py" ~/swiftbar-plugins/claude-codex-usage/claude_usage.py
+   ```
 
-**Codex** — reads the ChatGPT OAuth token from `~/.codex/auth.json` and calls
-`GET https://chatgpt.com/backend-api/wham/usage` (`primary_window` = 5-hour,
-`secondary_window` = weekly).
+4. Launch SwiftBar, open Preferences, and set the plugin folder to:
 
-The last good reading for each provider is cached under `~/.cache/claude-usage/`
-so a transient rate-limit or network blip shows the previous numbers (marked
-"last reading") instead of an error. Nothing is sent anywhere except Anthropic's
-and OpenAI's own APIs.
+   ```text
+   ~/swiftbar-plugins/claude-codex-usage
+   ```
 
-## Menu bar rendering
+5. Make sure Claude Code and/or Codex are signed in:
 
-The Swift renderer source is embedded in `claude_usage.py` (`MENUBAR_SWIFT_SRC`).
-On first run it's written to `~/.cache/claude-usage/menubar_render.swift` and
-compiled to a cached binary (recompiled only when the source changes). It draws
-the two colored lines to a Retina PNG via AppKit and prints base64, which the
-plugin emits with SwiftBar's `image=` parameter. SwiftBar scales the image to the
-menu-bar height. Tune the look via the `_MENUBAR_*` constants near the top of the
-renderer section (`_MENUBAR_FONT_PT`, `_MENUBAR_PAD_X/Y`, `_MENUBAR_SCALE`).
+   ```bash
+   claude
+   codex login
+   ```
 
-## Troubleshooting (dropdown notes)
+6. In SwiftBar, choose **Refresh All**.
 
-- **`C —` / "Keychain locked"** — Keychain access denied; click *Always Allow*.
-- **`C —` / "auth expired — open Claude Code"** — the stored `refreshToken` is
-  dead (revoked / logged out). Sign in again in Claude Code or the desktop app.
-- **`Cx —` / "signed out — run `codex login`"** — no Codex token; run `codex login`.
-- **"last reading"** — a rate-limit/network blip; showing the cached value.
-  Clears on the next successful poll.
+On first run, macOS may ask for Keychain access to `Claude Code-credentials`;
+choose **Always Allow**. The first run also compiles the embedded Swift renderer
+with `swiftc`, which can take a second or two. Later runs reuse the cached
+renderer.
+
+The `.300s.` in `claude-usage.300s.py` tells SwiftBar to run it every 300 seconds
+(5 minutes). Rename the file to change the default interval, for example
+`claude-usage.60s.py` for 1 minute. Short intervals may hit provider rate
+limits, so 5 minutes is the recommended default.
+
+## Usage
+
+The menu-bar item has two rows:
+
+- `C`: Claude Code 5-hour usage and reset countdown.
+- `Cx`: Codex primary window usage and reset countdown.
+
+Click the item to open the dropdown. It shows:
+
+- Claude 5-hour and weekly windows.
+- Codex 5-hour and weekly windows.
+- The next scheduled check time.
+- **Refresh now**, which asks SwiftBar to rerun the plugin immediately.
+- **Refresh every 1 min for 30 min**, which temporarily triggers SwiftBar once a
+  minute for 30 minutes. While active, the dropdown shows **Stop 1-minute
+  boost**.
+
+## Color Legend
+
+The `C` and `Cx` labels are always white. Usage percent and reset timer are
+colored independently in the menu-bar image:
+
+| Signal | White | Green | Orange | Red |
+| --- | --- | --- | --- | --- |
+| Usage used | `<50%` | `50-74%` | `75-89%` | `>=90%` |
+| Reset timer | `<=15m` | `<=1h` | `<=3h` | `>3h` |
+
+The dropdown uses default menu text colors for readability on macOS light and
+dark menus.
+
+## How It Works
+
+Each run fetches Claude and Codex independently, so one provider being signed out
+or offline does not block the other.
+
+**Claude** reads the OAuth token from the macOS Keychain item
+`Claude Code-credentials`, then calls:
+
+```text
+GET https://api.anthropic.com/api/oauth/usage
+```
+
+If the access token is expired or close to expiry, the plugin refreshes it via:
+
+```text
+POST https://console.anthropic.com/v1/oauth/token
+```
+
+The public OAuth client id used by Claude Code is embedded in the script:
+
+```text
+9d1c250a-e61b-44d9-88ed-5944d1962f5e
+```
+
+**Codex** reads the ChatGPT token from `~/.codex/auth.json`, then calls:
+
+```text
+GET https://chatgpt.com/backend-api/wham/usage
+```
+
+The last good reading for each provider is cached locally so transient
+rate-limit or network errors can show the previous numbers marked as
+`last reading`.
+
+The two-line menu-bar image is drawn by a small Swift/AppKit renderer embedded in
+`claude_usage.py`. If `swiftc` is unavailable or compilation fails, the plugin
+falls back to a plain text menu-bar item.
+
+## Privacy
+
+Tokens are read locally from the macOS Keychain and Codex's local auth file.
+This plugin does not send tokens or usage data to any third party. Network
+requests go only to Anthropic's Claude usage/token endpoints and OpenAI's
+ChatGPT usage endpoint.
+
+## Troubleshooting
+
+- `C —` or `Keychain locked`: allow Keychain access and choose **Always Allow**
+  for `Claude Code-credentials`.
+- `auth expired — open Claude Code`: sign in again with Claude Code.
+- `Cx —` or `signed out — run codex login`: run `codex login`.
+- `last reading`: a provider was rate-limited or offline; the plugin is showing
+  the previous successful reading.
+- Plain text instead of the colored two-line image: install Xcode Command Line
+  Tools so `swiftc` is available, then refresh SwiftBar.
+- SwiftBar shows broken `[?]` plugins: your plugin folder contains extra files.
+  Use a dedicated folder with only `claude-usage.300s.py` and `claude_usage.py`.
 
 ## Development
+
+Run tests with:
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+Run the plugin once from the repo with:
+
+```bash
+./claude-usage.300s.py
+```
+
+The first output line should be either `| image=...` or a plain-text fallback,
+followed by `---` and dropdown lines.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
