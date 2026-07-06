@@ -1,63 +1,86 @@
-# Claude Usage — SwiftBar plugin
+# Claude + Codex Usage — SwiftBar plugin
 
-Shows Claude Code's `/usage` session (5-hour) and weekly limits in the macOS menu bar.
+Shows **Claude** and **Codex** usage side-by-side in the macOS menu bar, as two
+stacked colored lines:
 
-Menu bar: `46% · 3h12m` — current 5-hour session usage and time until it resets,
-colored green / orange / red as you approach the limit. Click for the weekly
-number, reset times, and a refresh button.
+```
+C 11%      ↻ 3:24
+Cx 50%
+```
+
+- **Top line (`C`)** — Claude Code's 5-hour session usage (the `/usage` number).
+- **Bottom line (`Cx`)** — Codex's 5-hour usage (`/status`).
+- Each line is colored green / orange / red as it approaches the limit.
+- **`↻ 3:24`** next to the image is the clock time of the next refresh.
+
+Both providers report **% used**, so they're directly comparable (Codex's API
+returns `used_percent`; the "% remaining" you may see elsewhere is just a display
+choice). Click for per-window detail, reset times, and a manual Refresh.
 
 ## Install
 
 1. Install SwiftBar: `brew install --cask swiftbar`
 2. Launch SwiftBar and pick a plugin folder when prompted.
-3. Point SwiftBar at a folder that contains **only** these two files —
-   `claude-usage.300s.py` and `claude_usage.py`. Do **not** point SwiftBar at
-   this git repo: SwiftBar tries to run every file it finds (recursively), so a
-   repo full of docs/tests shows up as broken `[?]` plugins.
-
-   A clean way to keep edits live is a dedicated folder with symlinks back here:
+3. Point SwiftBar at a folder that contains **only** the plugin files. Do **not**
+   point it at this git repo — SwiftBar runs every file it finds (recursively),
+   so docs/tests show up as broken `[?]` plugins. A clean way to keep edits live
+   is a dedicated folder with symlinks back here:
    ```bash
    mkdir -p ~/swiftbar-plugins
-   ln -sf "$PWD/claude-usage.300s.py" ~/swiftbar-plugins/claude-usage.300s.py
-   ln -sf "$PWD/claude_usage.py"      ~/swiftbar-plugins/claude_usage.py
+   ln -sf "$PWD/claude-usage.300s.py"  ~/swiftbar-plugins/claude-usage.300s.py
+   ln -sf "$PWD/claude_usage.py"       ~/swiftbar-plugins/claude_usage.py
+   ln -sf "$PWD/menubar_render.swift"  ~/swiftbar-plugins/menubar_render.swift
    ```
    Then in SwiftBar → Preferences set the plugin folder to `~/swiftbar-plugins`.
-4. In SwiftBar, choose **Refresh All**. On first run, macOS shows a Keychain
-   prompt for `Claude Code-credentials` — click **Always Allow**.
+4. In SwiftBar, choose **Refresh All**. On first run macOS shows a Keychain
+   prompt for `Claude Code-credentials` — click **Always Allow**. The first run
+   also compiles the Swift renderer (~1–2 s); later runs reuse the cached binary.
 
-The plugin refreshes every 5 minutes (the `.300s.` in the filename). A short
-interval can trip the usage endpoint's rate limit (HTTP 429); 5 minutes is a
-safe default. Rename to `.120s.` / `.60s.` etc. to change it.
+Refreshes every 5 minutes (the `.300s.` in the filename). A short interval can
+trip the usage endpoints' rate limits; 5 minutes is a safe default. Rename to
+`.120s.` / `.60s.` etc. to change it.
+
+**Requirements:** macOS with `swiftc` (Xcode command line tools) for the stacked
+image; Claude Code and/or Codex signed in. If Swift is unavailable the plugin
+falls back to a plain-text menu bar (`C 11% · Cx 50%  ↻ 3:24`).
 
 ## How it works
 
-Each run reads your Claude Code OAuth token from the macOS Keychain
-(`Claude Code-credentials`) and calls `GET https://api.anthropic.com/api/oauth/usage`
-— the same data `/usage` shows.
+Each run fetches both providers independently; one being signed out or offline
+never blocks the other.
 
-**Auto-refresh:** OAuth access tokens expire every few hours. If the token is
-expired (or within 5 minutes of expiry), the plugin uses the stored
-`refreshToken` to mint a fresh one via Claude's OAuth endpoint and writes it back
-to the Keychain — exactly like Claude Code does — so the widget stays current
-even if you only ever use the Claude desktop app and never open the CLI. The
-rotated token is also mirrored to `~/.cache/claude-usage/creds.json` (mode 600),
-and whichever copy (Keychain vs. cache) has the later expiry wins, so the
-plugin's refreshes and Claude Code's own refreshes stay in sync.
+**Claude** — reads the OAuth token from the Keychain (`Claude Code-credentials`)
+and calls `GET https://api.anthropic.com/api/oauth/usage`. If the access token is
+expired (or within 5 min of expiry), the plugin uses the stored `refreshToken` to
+mint a fresh one via Claude's OAuth endpoint and writes it back to the Keychain —
+exactly like Claude Code does — so it stays fresh even if you only use the Claude
+desktop app. The rotated token is mirrored to `~/.cache/claude-usage/creds.json`
+(mode 600); whichever of Keychain/cache has the later expiry wins.
 
-The last good reading is cached at `~/.cache/claude-usage/last.json` so a
-transient rate-limit or network blip shows the previous numbers (marked "last
-reading") instead of an error. Nothing is sent anywhere except Anthropic's API.
+**Codex** — reads the ChatGPT OAuth token from `~/.codex/auth.json` and calls
+`GET https://chatgpt.com/backend-api/wham/usage` (`primary_window` = 5-hour,
+`secondary_window` = weekly).
 
-## Troubleshooting
+The last good reading for each provider is cached under `~/.cache/claude-usage/`
+so a transient rate-limit or network blip shows the previous numbers (marked
+"last reading") instead of an error. Nothing is sent anywhere except Anthropic's
+and OpenAI's own APIs.
 
-- **`Claude ?`** — Keychain access was denied; click *Always Allow* on the prompt.
-- **`auth`** — auto-refresh failed: the stored `refreshToken` itself is dead
-  (revoked or you logged out). Sign in again in Claude Code or the desktop app,
-  then Refresh.
-- **`—`** — offline / couldn't reach `api.anthropic.com`.
-- **`?` + "last reading"** — the endpoint rate-limited (HTTP 429) or a network
-  blip; showing the cached value. Clears on the next successful poll. If it
-  persists, increase the refresh interval (rename to a larger `.NNNs.`).
+## Menu bar rendering
+
+`menubar_render.swift` draws the two colored lines to a Retina PNG (via AppKit)
+and prints base64; the Python plugin emits it with SwiftBar's `image=` parameter.
+It's compiled once to `~/.cache/claude-usage/menubar_render` and recompiled only
+when the source changes.
+
+## Troubleshooting (dropdown notes)
+
+- **`C —` / "Keychain locked"** — Keychain access denied; click *Always Allow*.
+- **`C —` / "auth expired — open Claude Code"** — the stored `refreshToken` is
+  dead (revoked / logged out). Sign in again in Claude Code or the desktop app.
+- **`Cx —` / "signed out — run `codex login`"** — no Codex token; run `codex login`.
+- **"last reading"** — a rate-limit/network blip; showing the cached value.
+  Clears on the next successful poll.
 
 ## Development
 

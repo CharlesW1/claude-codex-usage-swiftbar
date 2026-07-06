@@ -4,16 +4,21 @@ import json
 import os
 import re
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Tuple
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 BETA_HEADER = "oauth-2025-04-20"
+
+CODEX_AUTH_PATH = os.path.expanduser("~/.codex/auth.json")
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last.json")
+CODEX_CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last_codex.json")
 CREDS_PATH = os.path.expanduser("~/.cache/claude-usage/creds.json")
 
 # Claude Code's public OAuth client; refresh proactively this far before expiry.
@@ -24,6 +29,7 @@ EXPIRY_SKEW_MS = 5 * 60 * 1000
 GREEN = "#34c759"
 ORANGE = "#ff9500"
 RED = "#ff3b30"
+GRAY = "#8e8e93"
 
 
 def severity_color(pct: float) -> str:
@@ -53,11 +59,42 @@ class Usage:
     weekly_resets_at: Optional[str]
 
 
+@dataclass
+class CodexUsage:
+    primary_pct: float               # 5-hour window, % used
+    primary_resets_at: Optional[str]
+    secondary_pct: float             # 7-day window, % used
+    secondary_resets_at: Optional[str]
+
+
 class UsageError(Exception):
     def __init__(self, kind: str, detail: str = ""):
         self.kind = kind
         self.detail = detail
         super().__init__(f"{kind}: {detail}")
+
+
+def _epoch_to_iso(epoch) -> Optional[str]:
+    if not epoch:
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def parse_codex(data: dict) -> CodexUsage:
+    """Parse chatgpt.com/backend-api/wham/usage. Codex reports used_percent,
+    matching Claude's 'utilization' — no remaining->used conversion needed."""
+    try:
+        rl = data["rate_limit"]
+        pw = rl["primary_window"]
+        sw = rl["secondary_window"]
+        return CodexUsage(
+            primary_pct=float(pw.get("used_percent") or 0.0),
+            primary_resets_at=_epoch_to_iso(pw.get("reset_at")),
+            secondary_pct=float(sw.get("used_percent") or 0.0),
+            secondary_resets_at=_epoch_to_iso(sw.get("reset_at")),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise UsageError("bad_response", f"unexpected codex payload: {exc}")
 
 
 def parse_usage(data: dict) -> Usage:
@@ -97,74 +134,77 @@ def _has_reset(resets_at: Optional[str]) -> bool:
     return bool(resets_at) and resets_at != "None"
 
 
-def render_usage(u: Usage, now: datetime, stale: bool = False) -> str:
-    sess_color = severity_color(u.session_pct)
-    week_color = severity_color(u.weekly_pct)
-
-    if _has_reset(u.session_resets_at):
-        sess_left = format_duration(time_until(u.session_resets_at, now), compact=True)
-        sess_left_long = format_duration(time_until(u.session_resets_at, now), compact=False)
-        bar = f"{_pct(u.session_pct)} · {sess_left} | sfimage=gauge.medium color={sess_color}"
-        session_line = f"Session (5h)  {_pct(u.session_pct)}  ·  resets in {sess_left_long} | color={sess_color}"
+def menubar_lines(
+    claude: Optional["Usage"], codex: Optional["CodexUsage"]
+) -> List[Tuple[str, str]]:
+    """Two stacked menu-bar rows (text, hex color): Claude session over Codex 5h."""
+    if claude is not None:
+        c_line = (f"C {_pct(claude.session_pct)}", severity_color(claude.session_pct))
     else:
-        bar = f"{_pct(u.session_pct)} | sfimage=gauge.medium color={sess_color}"
-        session_line = f"Session (5h)  {_pct(u.session_pct)}  ·  no active session | color={sess_color}"
-
-    if _has_reset(u.weekly_resets_at):
-        weekly_line = f"Weekly  {_pct(u.weekly_pct)}  ·  resets {format_reset_day(u.weekly_resets_at, now)} | color={week_color}"
+        c_line = ("C —", GRAY)
+    if codex is not None:
+        x_line = (f"Cx {_pct(codex.primary_pct)}", severity_color(codex.primary_pct))
     else:
-        weekly_line = f"Weekly  {_pct(u.weekly_pct)} | color={week_color}"
+        x_line = ("Cx —", GRAY)
+    return [c_line, x_line]
 
-    lines = [
-        bar,
-        "---",
-        session_line,
-        weekly_line,
-        "---",
-    ]
-    if stale:
-        lines.append("Showing last reading (rate-limited or offline) | color=gray")
+
+def next_check_label(now: datetime, interval_s: int) -> str:
+    """Clock time of the next scheduled refresh, in local time (e.g. '↻ 3:24')."""
+    nxt = (now + timedelta(seconds=interval_s)).astimezone()
+    return "↻ " + nxt.strftime("%-I:%M")
+
+
+def _window_line(label: str, pct: float, resets_at: Optional[str],
+                 now: datetime, style: str) -> str:
+    color = severity_color(pct)
+    if not _has_reset(resets_at):
+        return f"{label}  {_pct(pct)} | color={color}"
+    if style == "day":
+        when = "resets " + format_reset_day(resets_at, now)
+    else:
+        when = "resets in " + format_duration(time_until(resets_at, now), compact=False)
+    return f"{label}  {_pct(pct)}  ·  {when} | color={color}"
+
+
+_STALE_NOTE = "last reading (rate-limited or offline) | color=" + GRAY
+
+
+def render_dropdown(
+    claude: Optional["Usage"], codex: Optional["CodexUsage"],
+    now: datetime, interval_s: int,
+    stale_claude: bool = False, stale_codex: bool = False,
+    claude_note: Optional[str] = None, codex_note: Optional[str] = None,
+) -> str:
+    lines = ["---", "Claude | color=" + GRAY]
+    if claude is not None:
+        lines.append(_window_line("Session (5h)", claude.session_pct,
+                                  claude.session_resets_at, now, "duration"))
+        lines.append(_window_line("Weekly", claude.weekly_pct,
+                                  claude.weekly_resets_at, now, "day"))
+        if stale_claude:
+            lines.append(_STALE_NOTE)
+    else:
+        lines.append((claude_note or "unavailable") + " | color=" + GRAY)
+
+    lines.append("Codex | color=" + GRAY)
+    if codex is not None:
+        lines.append(_window_line("5-hour", codex.primary_pct,
+                                  codex.primary_resets_at, now, "duration"))
+        lines.append(_window_line("Weekly", codex.secondary_pct,
+                                  codex.secondary_resets_at, now, "day"))
+        if stale_codex:
+            lines.append(_STALE_NOTE)
+    else:
+        lines.append((codex_note or "unavailable") + " | color=" + GRAY)
+
     lines += [
+        "---",
+        f"{next_check_label(now, interval_s)} · next check (every {interval_s // 60}m) | color={GRAY}",
         "Refresh | refresh=true",
-        "Run /usage in Claude Code for full details | color=gray",
+        "Claude /usage · Codex /status for details | color=" + GRAY,
     ]
     return "\n".join(lines)
-
-
-_ERROR_BARS = {
-    "no_token": ("􀇿 Claude ? | sfimage=exclamationmark.triangle color=#ff9500",
-                 "Keychain access denied — click Always Allow on the prompt."),
-    "auth": ("􀇿 auth | sfimage=exclamationmark.triangle color=#ff9500",
-             "Token expired. Open Claude Code to refresh."),
-    "offline": ("— | sfimage=gauge.medium color=gray",
-                "Offline — could not reach api.anthropic.com."),
-}
-
-
-def render_error(err: UsageError) -> str:
-    if err.kind in _ERROR_BARS:
-        bar, note = _ERROR_BARS[err.kind]
-    else:  # bad_response / unknown
-        bar = "? | sfimage=gauge.medium color=gray"
-        note = f"Unexpected response: {err.detail}"
-    return "\n".join([bar, "---", f"{note} | color=gray", "Refresh | refresh=true"])
-
-
-def read_token() -> str:
-    try:
-        out = subprocess.run(
-            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise UsageError("no_token", str(exc))
-    if out.returncode != 0 or not out.stdout.strip():
-        raise UsageError("no_token", out.stderr.strip() or "keychain item not found")
-    try:
-        data = json.loads(out.stdout)
-        return data["claudeAiOauth"]["accessToken"]
-    except (ValueError, KeyError, TypeError) as exc:
-        raise UsageError("no_token", f"bad credential payload: {exc}")
 
 
 def fetch_usage(token: str) -> dict:
@@ -173,6 +213,88 @@ def fetch_usage(token: str) -> dict:
         headers={
             "Authorization": f"Bearer {token}",
             "anthropic-beta": BETA_HEADER,
+            "User-Agent": "claude-usage-swiftbar/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise UsageError("auth", "HTTP 401")
+        raise UsageError("bad_response", f"HTTP {exc.code}")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise UsageError("offline", str(exc))
+    except ValueError as exc:
+        raise UsageError("bad_response", f"non-JSON: {exc}")
+
+
+RENDERER_BIN = os.path.expanduser("~/.cache/claude-usage/menubar_render")
+
+
+def ensure_renderer() -> Optional[str]:
+    """Compile menubar_render.swift once (recompile if the source is newer).
+    Returns the binary path, or None if Swift/compilation is unavailable."""
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "menubar_render.swift")
+    if not os.path.exists(src):
+        return None
+    try:
+        fresh = os.path.exists(RENDERER_BIN) and \
+            os.path.getmtime(RENDERER_BIN) >= os.path.getmtime(src)
+        if not fresh:
+            os.makedirs(os.path.dirname(RENDERER_BIN), exist_ok=True)
+            r = subprocess.run(["swiftc", "-O", src, "-o", RENDERER_BIN],
+                               capture_output=True, text=True, timeout=120)
+            if r.returncode != 0:
+                return None
+        return RENDERER_BIN
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def render_menubar_image(lines: List[Tuple[str, str]]) -> Optional[str]:
+    """Render the two stacked (text, color) rows to a base64 PNG, or None."""
+    binp = ensure_renderer()
+    if not binp or len(lines) < 2:
+        return None
+    (t1, c1), (t2, c2) = lines[0], lines[1]
+    try:
+        r = subprocess.run([binp, t1, c1, t2, c2],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def read_codex_creds() -> dict:
+    """Read the ChatGPT OAuth token Codex stores in ~/.codex/auth.json."""
+    try:
+        with open(CODEX_AUTH_PATH) as f:
+            d = json.load(f)
+    except (OSError, ValueError) as exc:
+        raise UsageError("no_token", f"codex auth: {exc}")
+    tok = d.get("tokens")
+    if isinstance(tok, str):
+        try:
+            tok = json.loads(tok)
+        except ValueError:
+            tok = {}
+    tok = tok or {}
+    access = tok.get("access_token")
+    if not access:
+        raise UsageError("no_token", "no codex access token; run `codex login`")
+    return {"access_token": access, "account_id": tok.get("account_id")}
+
+
+def fetch_codex(token: str, account_id: Optional[str]) -> dict:
+    req = urllib.request.Request(
+        CODEX_USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "chatgpt-account-id": account_id or "",
+            "Accept": "application/json",
             "User-Agent": "claude-usage-swiftbar/1.0",
         },
     )
@@ -212,6 +334,34 @@ def cache_load() -> Optional[Usage]:
             session_resets_at=d["session_resets_at"],
             weekly_pct=d["weekly_pct"],
             weekly_resets_at=d["weekly_resets_at"],
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def codex_cache_save(c: CodexUsage) -> None:
+    try:
+        os.makedirs(os.path.dirname(CODEX_CACHE_PATH), exist_ok=True)
+        with open(CODEX_CACHE_PATH, "w") as f:
+            json.dump({
+                "primary_pct": c.primary_pct,
+                "primary_resets_at": c.primary_resets_at,
+                "secondary_pct": c.secondary_pct,
+                "secondary_resets_at": c.secondary_resets_at,
+            }, f)
+    except OSError:
+        pass
+
+
+def codex_cache_load() -> Optional[CodexUsage]:
+    try:
+        with open(CODEX_CACHE_PATH) as f:
+            d = json.load(f)
+        return CodexUsage(
+            primary_pct=d["primary_pct"],
+            primary_resets_at=d["primary_resets_at"],
+            secondary_pct=d["secondary_pct"],
+            secondary_resets_at=d["secondary_resets_at"],
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -346,9 +496,23 @@ def current_token(now_ms: int, force: bool = False) -> str:
 # because those need the user to act and the cached number would mask that.
 _TRANSIENT_KINDS = ("offline", "bad_response")
 
+_CLAUDE_NOTES = {
+    "no_token": "Keychain locked — allow access",
+    "auth": "auth expired — open Claude Code",
+    "offline": "offline",
+    "bad_response": "rate-limited or error",
+}
+_CODEX_NOTES = {
+    "no_token": "signed out — run `codex login`",
+    "auth": "auth expired — run codex",
+    "offline": "offline",
+    "bad_response": "rate-limited or error",
+}
 
-def build_output(now: datetime) -> str:
-    now_ms = int(now.timestamp() * 1000)
+
+def _get_claude(now_ms: int):
+    """Return (Usage|None, stale, note). Refreshes proactively/reactively and
+    falls back to the cached reading on a transient error."""
     try:
         token = current_token(now_ms)
         try:
@@ -361,13 +525,60 @@ def build_output(now: datetime) -> str:
                 raise
         usage = parse_usage(data)
         cache_save(usage)
-        return render_usage(usage, now)
+        return usage, False, None
     except UsageError as err:
         if err.kind in _TRANSIENT_KINDS:
             cached = cache_load()
             if cached is not None:
-                return render_usage(cached, now, stale=True)
-        return render_error(err)
+                return cached, True, None
+        return None, False, _CLAUDE_NOTES.get(err.kind, "unavailable")
+
+
+def _get_codex(now_ms: int):
+    """Return (CodexUsage|None, stale, note), with cache fallback on transient."""
+    try:
+        creds = read_codex_creds()
+        data = fetch_codex(creds["access_token"], creds["account_id"])
+        cx = parse_codex(data)
+        codex_cache_save(cx)
+        return cx, False, None
+    except UsageError as err:
+        if err.kind in _TRANSIENT_KINDS:
+            cached = codex_cache_load()
+            if cached is not None:
+                return cached, True, None
+        return None, False, _CODEX_NOTES.get(err.kind, "unavailable")
+
+
+def _detect_interval() -> int:
+    argv0 = sys.argv[0] if sys.argv else ""
+    m = re.search(r"\.(\d+)s\.", os.path.basename(argv0))
+    return int(m.group(1)) if m else 300
+
+
+def assemble_output(claude, codex, now, interval_s, stale_c, stale_x,
+                    note_c, note_x, image_b64) -> str:
+    """Pure: build the SwiftBar output (menu-bar line + dropdown)."""
+    lines = menubar_lines(claude, codex)
+    nxt = next_check_label(now, interval_s)
+    if image_b64:
+        first = f"{nxt} | image={image_b64}"
+    else:  # graceful fallback when Swift rendering is unavailable
+        first = " · ".join(t for t, _ in lines) + f"  {nxt}"
+    dropdown = render_dropdown(claude, codex, now, interval_s,
+                               stale_c, stale_x, note_c, note_x)
+    return first + "\n" + dropdown
+
+
+def build_output(now: datetime, interval_s: Optional[int] = None) -> str:
+    if interval_s is None:
+        interval_s = _detect_interval()
+    now_ms = int(now.timestamp() * 1000)
+    claude, stale_c, note_c = _get_claude(now_ms)
+    codex, stale_x, note_x = _get_codex(now_ms)
+    image_b64 = render_menubar_image(menubar_lines(claude, codex))
+    return assemble_output(claude, codex, now, interval_s,
+                           stale_c, stale_x, note_c, note_x, image_b64)
 
 
 def main() -> None:
