@@ -246,13 +246,13 @@ def next_check_label(now: datetime, interval_s: int) -> str:
 
 
 def _window_line(label: str, pct: float, resets_at: Optional[str],
-                 now: datetime) -> str:
-    # No status color in the dropdown — it's hard to read on the translucent
-    # menu; the color coding lives only in the menu-bar image. Default text color.
+                 now: datetime, color: str = GRAY) -> str:
+    # Match the passive provider-label rows so detail lines do not become
+    # highlightable menu actions.
     body = f"{label}  {_pct(pct)}"
     if _has_reset(resets_at):
         body += "  ·  resets in " + format_countdown(time_until(resets_at, now))
-    return body
+    return f"{body} | color={color}"
 
 
 _STALE_NOTE = "last reading (rate-limited or offline) | color=" + GRAY
@@ -264,7 +264,7 @@ def render_dropdown(
     stale_claude: bool = False, stale_codex: bool = False,
     claude_note: Optional[str] = None, codex_note: Optional[str] = None,
     boost_remaining: Optional[int] = None, cli: Optional[Tuple[str, str]] = None,
-    display_mode: str = "both",
+    display_mode: str = "both", detail_color: str = GRAY,
 ) -> str:
     display_mode = normalize_display_mode(display_mode)
     lines = ["---"]
@@ -273,9 +273,9 @@ def render_dropdown(
         lines.append("Claude | color=" + GRAY)
         if claude is not None:
             lines.append(_window_line("5-hour", claude.session_pct,
-                                      claude.session_resets_at, now))
+                                      claude.session_resets_at, now, detail_color))
             lines.append(_window_line("Weekly", claude.weekly_pct,
-                                      claude.weekly_resets_at, now))
+                                      claude.weekly_resets_at, now, detail_color))
             if stale_claude:
                 lines.append(_STALE_NOTE)
         else:
@@ -285,9 +285,9 @@ def render_dropdown(
         lines.append("Codex | color=" + GRAY)
         if codex is not None:
             lines.append(_window_line("5-hour", codex.primary_pct,
-                                      codex.primary_resets_at, now))
+                                      codex.primary_resets_at, now, detail_color))
             lines.append(_window_line("Weekly", codex.secondary_pct,
-                                      codex.secondary_resets_at, now))
+                                      codex.secondary_resets_at, now, detail_color))
             if stale_codex:
                 lines.append(_STALE_NOTE)
         else:
@@ -296,8 +296,9 @@ def render_dropdown(
     lines.append("---")
     lines.append("Display | color=" + GRAY)
     labels = {"claude": "Claude", "codex": "Codex", "both": "Both"}
+    lines.append(f"Show: {labels[display_mode]}")
     for mode in ("claude", "codex", "both"):
-        label = f"Show: {labels[mode]}" + (" ✓" if mode == display_mode else "")
+        label = f"--Show: {labels[mode]}" + (" ✓" if mode == display_mode else "")
         if cli is None:
             lines.append(label)
         else:
@@ -360,6 +361,9 @@ RENDERER_SRC = os.path.expanduser("~/.cache/claude-usage/menubar_render.swift")
 # per line — set it to match neighboring stacked menu-bar items (~9pt each).
 # _MENUBAR_SCALE only adds Retina sharpness; it does not change displayed size.
 _MENUBAR_FONT_PT = 9.0
+# One visible provider = one row, so there's vertical room to fill the bar with
+# a larger, more legible glyph instead of a lone tiny 9pt line.
+_MENUBAR_FONT_PT_SINGLE = 15.0
 _MENUBAR_PAD_X = 2.0
 _MENUBAR_PAD_Y = 1.0
 _MENUBAR_LINE_GAP = 0.0
@@ -478,8 +482,9 @@ def render_menubar_image(rows: List["BarRow"]) -> Optional[str]:
     args = []
     for r in rows:
         args += [r.label, r.value, r.value_color, r.timer, r.timer_color]
+    font_pt = _MENUBAR_FONT_PT_SINGLE if len(rows) == 1 else _MENUBAR_FONT_PT
     env = dict(os.environ,
-               MB_SCALE=str(_MENUBAR_SCALE), MB_FONT=str(_MENUBAR_FONT_PT),
+               MB_SCALE=str(_MENUBAR_SCALE), MB_FONT=str(font_pt),
                MB_PADX=str(_MENUBAR_PAD_X), MB_PADY=str(_MENUBAR_PAD_Y),
                MB_GAP=str(_MENUBAR_LINE_GAP))
     try:
@@ -782,7 +787,8 @@ def _detect_interval() -> int:
 
 def assemble_output(rows, claude, codex, now, interval_s, stale_c, stale_x,
                     note_c, note_x, image_b64,
-                    boost_remaining=None, cli=None, display_mode="both") -> str:
+                    boost_remaining=None, cli=None, display_mode="both",
+                    detail_color=GRAY) -> str:
     """Pure: build the SwiftBar output (menu-bar line + dropdown). The next-check
     time lives only in the dropdown; the menu bar shows just the image."""
     if image_b64:
@@ -790,7 +796,8 @@ def assemble_output(rows, claude, codex, now, interval_s, stale_c, stale_x,
     else:  # graceful fallback when Swift rendering is unavailable
         first = " · ".join(_bar_row_text(r) for r in rows)
     dropdown = render_dropdown(claude, codex, now, interval_s, stale_c, stale_x,
-                               note_c, note_x, boost_remaining, cli, display_mode)
+                               note_c, note_x, boost_remaining, cli, display_mode,
+                               detail_color)
     return first + "\n" + dropdown
 
 

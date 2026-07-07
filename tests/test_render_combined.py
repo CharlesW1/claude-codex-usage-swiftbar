@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timezone
-from claude_usage import render_dropdown, Usage, CodexUsage
+from claude_usage import render_dropdown, Usage, CodexUsage, GRAY
 
 NOW = datetime(2026, 6, 28, 7, 18, 0, tzinfo=timezone.utc)
 CLAUDE = Usage(11.0, "2026-06-28T10:30:00+00:00", 43.0, "2026-07-04T12:00:00+00:00")
@@ -11,13 +11,13 @@ class TestRenderDropdown(unittest.TestCase):
     def test_both_providers_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)
         self.assertIn("Claude | color=#8e8e93", out)
-        # Dropdown data lines carry no status color (default menu text).
-        self.assertIn("5-hour  11%  ·  resets in 3h 12m\n", out + "\n")
-        self.assertIn("Weekly  43%  ·  resets in 6d 4h\n", out + "\n")
+        # Detail rows use the same passive section style as the provider labels.
+        self.assertIn(f"5-hour  11%  ·  resets in 3h 12m | color={GRAY}", out)
+        self.assertIn(f"Weekly  43%  ·  resets in 6d 4h | color={GRAY}", out)
         self.assertIn("Codex | color=#8e8e93", out)
-        self.assertIn("5-hour  50%  ·  resets in 1h 42m\n", out + "\n")
-        self.assertIn("Weekly  28%  ·  resets in 6d 4h\n", out + "\n")
-        self.assertNotIn("resets in 3h 12m | color=", out)  # no per-line color
+        self.assertIn(f"5-hour  50%  ·  resets in 1h 42m | color={GRAY}", out)
+        self.assertIn(f"Weekly  28%  ·  resets in 6d 4h | color={GRAY}", out)
+        self.assertNotIn('href="."', out)
 
     def test_next_check_and_refresh_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)
@@ -46,16 +46,22 @@ class TestRenderDropdown(unittest.TestCase):
                               cli=("/py", "/mod.py"), display_mode="claude")
         self.assertIn("Claude | color=#8e8e93", out)
         self.assertNotIn("Codex | color=#8e8e93", out)
-        self.assertIn("Show: Claude ✓", out)
-        self.assertIn('param2="show" param3="codex"', out)
+        self.assertIn("\nShow: Claude\n", out)
+        self.assertIn('--Show: Claude ✓ | bash="/py" param1="/mod.py" '
+                      'param2="show" param3="claude" terminal=false refresh=true', out)
+        self.assertIn('--Show: Codex | bash="/py" param1="/mod.py" '
+                      'param2="show" param3="codex" terminal=false refresh=true', out)
 
     def test_codex_mode_hides_claude_section(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300,
                               cli=("/py", "/mod.py"), display_mode="codex")
         self.assertNotIn("Claude | color=#8e8e93", out)
         self.assertIn("Codex | color=#8e8e93", out)
-        self.assertIn("Show: Codex ✓", out)
-        self.assertIn('param2="show" param3="both"', out)
+        self.assertIn("\nShow: Codex\n", out)
+        self.assertIn('--Show: Codex ✓ | bash="/py" param1="/mod.py" '
+                      'param2="show" param3="codex" terminal=false refresh=true', out)
+        self.assertIn('--Show: Both | bash="/py" param1="/mod.py" '
+                      'param2="show" param3="both" terminal=false refresh=true', out)
 
     def test_stale_claude_marked(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300, stale_claude=True)
