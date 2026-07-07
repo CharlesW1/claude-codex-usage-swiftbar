@@ -22,11 +22,11 @@ class TestRenderDropdown(unittest.TestCase):
     def test_next_check_and_refresh_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)
         self.assertRegex(out, r"↻ \d{1,2}:\d{2}:\d{2} (AM|PM) · next check \(every 5m\)")
-        self.assertIn("Refresh now | refresh=true", out)
+        self.assertIn("Check now | refresh=true", out)
 
     def test_boost_control_present_when_cli_given(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300, cli=("/py", "/mod.py"))
-        self.assertIn("Refresh every 1 min for 30 min", out)
+        self.assertIn("Check every 1 min for 30 min", out)
         self.assertIn('param2="boost"', out)
 
     def test_boost_active_shows_stop_and_countdown(self):
@@ -66,6 +66,24 @@ class TestRenderDropdown(unittest.TestCase):
     def test_stale_claude_marked(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300, stale_claude=True)
         self.assertIn("last reading", out)
+
+    def test_fable_line_present_when_scoped_limit_exists(self):
+        claude = Usage(11.0, "2026-06-28T10:30:00+00:00", 43.0,
+                       "2026-07-04T12:00:00+00:00",
+                       fable_pct=40.0, fable_resets_at="2026-07-04T12:00:00+00:00")
+        out = render_dropdown(claude, CODEX, NOW, 300)
+        self.assertIn(f"Fable  40%  ·  resets in 6d 4h | color={GRAY}", out)
+
+    def test_no_fable_line_when_absent(self):
+        out = render_dropdown(CLAUDE, CODEX, NOW, 300)  # CLAUDE has no fable_pct
+        self.assertNotIn("Fable", out)
+
+    def test_zero_percent_fable_still_renders(self):
+        # 0.0 is a real allotment (0% used) and must show; only None hides it.
+        claude = Usage(11.0, "2026-06-28T10:30:00+00:00", 43.0,
+                       "2026-07-04T12:00:00+00:00",
+                       fable_pct=0.0, fable_resets_at="2026-07-04T12:00:00+00:00")
+        self.assertIn("Fable  0%", render_dropdown(claude, CODEX, NOW, 300))
 
     def test_null_reset_does_not_crash(self):
         codex = CodexUsage(0.0, None, 5.0, "2026-07-04T12:00:00+00:00")

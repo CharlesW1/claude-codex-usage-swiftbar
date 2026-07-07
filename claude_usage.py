@@ -106,6 +106,10 @@ class Usage:
     session_resets_at: Optional[str]
     weekly_pct: float
     weekly_resets_at: Optional[str]
+    # Fable is a weekly, model-scoped limit inside the Claude subscription (no
+    # 5-hour window of its own). None when the account has no Fable allotment.
+    fable_pct: Optional[float] = None
+    fable_resets_at: Optional[str] = None
 
 
 @dataclass
@@ -146,15 +150,46 @@ def parse_codex(data: dict) -> CodexUsage:
         raise UsageError("bad_response", f"unexpected codex payload: {exc}")
 
 
+def _parse_fable(data: dict) -> Tuple[Optional[float], Optional[str]]:
+    """Pull the Fable weekly-scoped limit out of the `limits` array, if present.
+    Fable surfaces only there — as a `weekly_scoped` entry whose
+    scope.model.display_name is "Fable" — not as a top-level bucket.
+
+    Fully defensive: Fable is a supplementary line, so any malformed shape
+    (non-list limits, non-dict entry/scope/model, non-numeric percent) yields no
+    Fable rather than raising and breaking the core 5-hour/weekly Claude parse."""
+    limits = data.get("limits")
+    if not isinstance(limits, list):
+        return None, None
+    for lim in limits:
+        if not isinstance(lim, dict):
+            continue
+        scope = lim.get("scope")
+        model = scope.get("model") if isinstance(scope, dict) else None
+        if not isinstance(model, dict) or model.get("display_name") != "Fable":
+            continue
+        pct = lim.get("percent")
+        try:
+            pct = float(pct) if pct is not None else None
+        except (TypeError, ValueError):
+            pct = None
+        resets = lim.get("resets_at")
+        return pct, resets if isinstance(resets, str) else None
+    return None, None
+
+
 def parse_usage(data: dict) -> Usage:
     try:
         fh = data["five_hour"]
         sd = data["seven_day"]
+        fable_pct, fable_resets_at = _parse_fable(data)
         return Usage(
             session_pct=float(fh.get("utilization") or 0.0),
             session_resets_at=fh.get("resets_at"),  # None when no active window
             weekly_pct=float(sd.get("utilization") or 0.0),
             weekly_resets_at=sd.get("resets_at"),
+            fable_pct=fable_pct,
+            fable_resets_at=fable_resets_at,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise UsageError("bad_response", f"unexpected payload: {exc}")
@@ -276,6 +311,9 @@ def render_dropdown(
                                       claude.session_resets_at, now, detail_color))
             lines.append(_window_line("Weekly", claude.weekly_pct,
                                       claude.weekly_resets_at, now, detail_color))
+            if claude.fable_pct is not None:
+                lines.append(_window_line("Fable", claude.fable_pct,
+                                          claude.fable_resets_at, now, detail_color))
             if stale_claude:
                 lines.append(_STALE_NOTE)
         else:
@@ -313,14 +351,14 @@ def render_dropdown(
     else:
         lines.append(f"{next_check_label(now, interval_s)} · next check "
                      f"(every {interval_s // 60}m) | color={GRAY}")
-    lines.append("Refresh now | refresh=true")
+    lines.append("Check now | refresh=true")
     if cli is not None:
         py, mod = cli
         if boost_remaining:
             lines.append(f'Stop 1-minute boost | bash="{py}" param1="{mod}" '
                          f'param2="stop" terminal=false refresh=true')
         else:
-            lines.append(f'Refresh every 1 min for 30 min | bash="{py}" param1="{mod}" '
+            lines.append(f'Check every 1 min for 30 min | bash="{py}" param1="{mod}" '
                          f'param2="boost" terminal=false refresh=true')
     details = {
         "claude": "Claude /usage for details",
@@ -549,6 +587,8 @@ def cache_save(u: Usage) -> None:
                 "session_resets_at": u.session_resets_at,
                 "weekly_pct": u.weekly_pct,
                 "weekly_resets_at": u.weekly_resets_at,
+                "fable_pct": u.fable_pct,
+                "fable_resets_at": u.fable_resets_at,
             }, f)
     except OSError:
         pass
@@ -563,6 +603,8 @@ def cache_load() -> Optional[Usage]:
             session_resets_at=d["session_resets_at"],
             weekly_pct=d["weekly_pct"],
             weekly_resets_at=d["weekly_resets_at"],
+            fable_pct=d.get("fable_pct"),
+            fable_resets_at=d.get("fable_resets_at"),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

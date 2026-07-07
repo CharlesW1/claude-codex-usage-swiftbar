@@ -42,6 +42,23 @@ class TestCacheRoundTrip(CacheBase):
         codex_cache_save(CX)
         self.assertEqual(codex_cache_load(), CX)
 
+    def test_claude_round_trip_preserves_fable(self):
+        u = Usage(46.0, "2026-06-28T10:30:00+00:00", 23.0,
+                  "2026-07-04T12:00:00+00:00",
+                  fable_pct=40.0, fable_resets_at="2026-07-11T12:00:00+00:00")
+        cache_save(u)
+        self.assertEqual(cache_load(), u)
+
+    def test_old_cache_without_fable_keys_loads_as_none(self):
+        import json
+        with open(claude_usage.CACHE_PATH, "w") as f:
+            json.dump({"session_pct": 46.0, "session_resets_at": None,
+                       "weekly_pct": 23.0, "weekly_resets_at": None}, f)
+        loaded = cache_load()
+        self.assertEqual(loaded.session_pct, 46.0)
+        self.assertIsNone(loaded.fable_pct)
+        self.assertIsNone(loaded.fable_resets_at)
+
 
 class TestTransientFallback(CacheBase):
     def test_claude_429_falls_back_to_cache_marked_stale(self):
