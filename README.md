@@ -5,6 +5,8 @@
 [![stdlib only](https://img.shields.io/badge/Python-stdlib%20only-green)](README.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+![Claude + Codex Usage — menu-bar usage monitor](assets/social-preview.png)
+
 A macOS [SwiftBar](https://swiftbar.app/) / xbar-style menu-bar usage monitor for
 **Claude Code** and **OpenAI Codex**. It shows 5-hour and weekly usage limits,
 reset countdowns, rate-limit status, and per-window detail as two stacked,
