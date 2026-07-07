@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# <xbar.title>Claude Usage</xbar.title>
-# <xbar.version>v1.0</xbar.version>
-# <xbar.desc>Claude Code /usage session + weekly limits in the menu bar.</xbar.desc>
+# <xbar.title>Claude + Codex Usage</xbar.title>
+# <xbar.version>v1.0.0</xbar.version>
+# <xbar.desc>Claude Code and OpenAI Codex 5-hour and weekly usage limits in the menu bar.</xbar.desc>
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 import os

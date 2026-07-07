@@ -1,8 +1,14 @@
 # Claude + Codex Usage SwiftBar
 
-A macOS [SwiftBar](https://swiftbar.app/) plugin that shows **Claude Code** and
-**OpenAI Codex** usage as two stacked, color-coded lines in the menu bar, with a
-clickable dropdown for per-window detail and refresh controls.
+[![macOS](https://img.shields.io/badge/macOS-SwiftBar-000000?logo=apple)](https://swiftbar.app/)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![stdlib only](https://img.shields.io/badge/Python-stdlib%20only-green)](README.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+A macOS [SwiftBar](https://swiftbar.app/) / xbar-style menu-bar usage monitor for
+**Claude Code** and **OpenAI Codex**. It shows 5-hour and weekly usage limits,
+reset countdowns, rate-limit status, and per-window detail as two stacked,
+color-coded status-bar lines.
 
 ![Generated menu-bar sample](assets/menu-bar-sample.png)
 
@@ -17,6 +23,16 @@ Cx 52% · 14m
 
 Both providers are shown as **percent used**, so the numbers are directly
 comparable.
+
+## What You Get
+
+- One menu-bar view for Claude Code and OpenAI Codex usage.
+- 5-hour and weekly limit windows with reset countdowns.
+- Color-coded usage and reset timing so rate-limit risk is visible at a glance.
+- Dropdown detail for Claude `/usage` and Codex `/status` windows.
+- Manual **Refresh now** plus a temporary 1-minute refresh boost for 30 minutes.
+- Local-only token reads from the macOS Keychain and `~/.codex/auth.json`; no
+  Python packages required.
 
 ## Dependencies
 
@@ -185,6 +201,13 @@ Run the plugin once from the repo with:
 
 The first output line should be either `| image=...` or a plain-text fallback,
 followed by `---` and dropdown lines.
+
+## See Also
+
+- [ccusage](https://github.com/ryoppippi/ccusage) — Claude Code usage analysis in
+  the terminal.
+- [SwiftBar](https://swiftbar.app/) and [xbar](https://xbarapp.com/) — macOS
+  menu-bar plugin hosts.
 
 ## License
 
