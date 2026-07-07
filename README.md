@@ -9,8 +9,8 @@
 
 A macOS [SwiftBar](https://swiftbar.app/) / xbar-style menu-bar usage monitor for
 **Claude Code** and **OpenAI Codex**. It shows 5-hour and weekly usage limits,
-reset countdowns, rate-limit status, and per-window detail as two stacked,
-color-coded status-bar lines.
+reset countdowns, rate-limit status, and per-window detail as color-coded
+status-bar lines.
 
 ![Generated menu-bar sample](assets/menu-bar-sample.png)
 
@@ -29,6 +29,7 @@ comparable.
 ## What You Get
 
 - One menu-bar view for Claude Code and OpenAI Codex usage.
+- Dropdown toggle for showing Claude, Codex, or both.
 - 5-hour and weekly limit windows with reset countdowns.
 - Color-coded usage and reset timing so rate-limit risk is visible at a glance.
 - Dropdown detail for Claude `/usage` and Codex `/status` windows.
@@ -101,7 +102,7 @@ limits, so 5 minutes is the recommended default.
 
 ## Usage
 
-The menu-bar item has two rows:
+By default, the menu-bar item has two rows:
 
 - `C`: Claude Code 5-hour usage and reset countdown.
 - `Cx`: Codex primary window usage and reset countdown.
@@ -110,6 +111,8 @@ Click the item to open the dropdown. It shows:
 
 - Claude 5-hour and weekly windows.
 - Codex 5-hour and weekly windows.
+- **Display** options for showing only Claude, only Codex, or both. The selected
+  option is saved locally in `~/.cache/claude-usage/display_mode`.
 - The next scheduled check time.
 - **Refresh now**, which asks SwiftBar to rerun the plugin immediately.
 - **Refresh every 1 min for 30 min**, which temporarily triggers SwiftBar once a

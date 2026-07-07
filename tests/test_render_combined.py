@@ -41,6 +41,22 @@ class TestRenderDropdown(unittest.TestCase):
         self.assertIn("signed out", out)
         self.assertNotIn("50%", out)  # no Codex usage numbers rendered
 
+    def test_claude_mode_hides_codex_section(self):
+        out = render_dropdown(CLAUDE, CODEX, NOW, 300,
+                              cli=("/py", "/mod.py"), display_mode="claude")
+        self.assertIn("Claude | color=#8e8e93", out)
+        self.assertNotIn("Codex | color=#8e8e93", out)
+        self.assertIn("Show: Claude ✓", out)
+        self.assertIn('param2="show" param3="codex"', out)
+
+    def test_codex_mode_hides_claude_section(self):
+        out = render_dropdown(CLAUDE, CODEX, NOW, 300,
+                              cli=("/py", "/mod.py"), display_mode="codex")
+        self.assertNotIn("Claude | color=#8e8e93", out)
+        self.assertIn("Codex | color=#8e8e93", out)
+        self.assertIn("Show: Codex ✓", out)
+        self.assertIn('param2="show" param3="both"', out)
+
     def test_stale_claude_marked(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300, stale_claude=True)
         self.assertIn("last reading", out)

@@ -24,12 +24,13 @@ class BuildBase(unittest.TestCase):
         self._orig = {}
         for name in ("current_token", "fetch_usage", "read_codex_creds",
                      "fetch_codex", "render_menubar_image", "CACHE_PATH",
-                     "CODEX_CACHE_PATH", "BOOST_UNTIL_PATH"):
+                     "CODEX_CACHE_PATH", "BOOST_UNTIL_PATH", "DISPLAY_MODE_PATH"):
             self._orig[name] = getattr(claude_usage, name)
         tmp = tempfile.mkdtemp()
         claude_usage.CACHE_PATH = os.path.join(tmp, "claude.json")
         claude_usage.CODEX_CACHE_PATH = os.path.join(tmp, "codex.json")
         claude_usage.BOOST_UNTIL_PATH = os.path.join(tmp, "boost")
+        claude_usage.DISPLAY_MODE_PATH = os.path.join(tmp, "display_mode")
         # Force text fallback (no Swift) so the menu-bar line is deterministic.
         claude_usage.render_menubar_image = lambda lines: None
 
@@ -84,6 +85,21 @@ class TestBothProviders(BuildBase):
         out = build_output(NOW, interval_s=300)
         self.assertIn("Cx —", out.splitlines()[0])
         self.assertIn("codex login", out)
+
+    def test_saved_display_mode_filters_visible_output(self):
+        claude_usage.current_token = lambda now_ms, force=False: "tok"
+        claude_usage.fetch_usage = lambda t: CLAUDE_GOOD
+        claude_usage.read_codex_creds = lambda: {"access_token": "x", "account_id": "a"}
+        claude_usage.fetch_codex = lambda t, a: CODEX_GOOD
+        claude_usage.display_mode_save("codex")
+
+        out = build_output(NOW, interval_s=300)
+
+        first = out.splitlines()[0]
+        self.assertNotIn("C 46%", first)
+        self.assertIn("Cx 50%", first)
+        self.assertNotIn("Claude | color=#8e8e93", out)
+        self.assertIn("Show: Codex ✓", out)
 
 
 if __name__ == "__main__":

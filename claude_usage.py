@@ -21,6 +21,7 @@ CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last.json")
 CODEX_CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last_codex.json")
 CREDS_PATH = os.path.expanduser("~/.cache/claude-usage/creds.json")
+DISPLAY_MODE_PATH = os.path.expanduser("~/.cache/claude-usage/display_mode")
 BOOST_UNTIL_PATH = os.path.expanduser("~/.cache/claude-usage/boost_until")
 BOOST_LOCK_PATH = os.path.expanduser("~/.cache/claude-usage/boost.lock")
 BOOST_INTERVAL_S = 60
@@ -35,6 +36,29 @@ GREEN = "#34c759"
 ORANGE = "#ff9500"
 RED = "#ff3b30"
 GRAY = "#8e8e93"
+DISPLAY_MODES = ("both", "claude", "codex")
+
+
+def normalize_display_mode(mode: Optional[str]) -> str:
+    return mode if mode in DISPLAY_MODES else "both"
+
+
+def display_mode_load() -> str:
+    try:
+        with open(DISPLAY_MODE_PATH) as f:
+            return normalize_display_mode(f.read().strip())
+    except OSError:
+        return "both"
+
+
+def display_mode_save(mode: str) -> None:
+    mode = normalize_display_mode(mode)
+    try:
+        os.makedirs(os.path.dirname(DISPLAY_MODE_PATH), exist_ok=True)
+        with open(DISPLAY_MODE_PATH, "w") as f:
+            f.write(mode)
+    except OSError:
+        pass
 
 
 def severity_color(pct: float) -> str:
@@ -200,6 +224,15 @@ def menubar_rows(
     return [c, x]
 
 
+def filter_menubar_rows(rows: List["BarRow"], display_mode: str) -> List["BarRow"]:
+    mode = normalize_display_mode(display_mode)
+    if mode == "claude":
+        return [r for r in rows if r.label == "C"]
+    if mode == "codex":
+        return [r for r in rows if r.label == "Cx"]
+    return rows
+
+
 def _bar_row_text(r: "BarRow") -> str:
     """Plain-text form of a row for the no-Swift fallback menu bar."""
     return f"{r.label} {r.value}" + (f" · {r.timer}" if r.timer else "")
@@ -231,29 +264,46 @@ def render_dropdown(
     stale_claude: bool = False, stale_codex: bool = False,
     claude_note: Optional[str] = None, codex_note: Optional[str] = None,
     boost_remaining: Optional[int] = None, cli: Optional[Tuple[str, str]] = None,
+    display_mode: str = "both",
 ) -> str:
-    lines = ["---", "Claude | color=" + GRAY]
-    if claude is not None:
-        lines.append(_window_line("5-hour", claude.session_pct,
-                                  claude.session_resets_at, now))
-        lines.append(_window_line("Weekly", claude.weekly_pct,
-                                  claude.weekly_resets_at, now))
-        if stale_claude:
-            lines.append(_STALE_NOTE)
-    else:
-        lines.append((claude_note or "unavailable") + " | color=" + GRAY)
+    display_mode = normalize_display_mode(display_mode)
+    lines = ["---"]
 
-    lines.append("Codex | color=" + GRAY)
-    if codex is not None:
-        lines.append(_window_line("5-hour", codex.primary_pct,
-                                  codex.primary_resets_at, now))
-        lines.append(_window_line("Weekly", codex.secondary_pct,
-                                  codex.secondary_resets_at, now))
-        if stale_codex:
-            lines.append(_STALE_NOTE)
-    else:
-        lines.append((codex_note or "unavailable") + " | color=" + GRAY)
+    if display_mode in ("both", "claude"):
+        lines.append("Claude | color=" + GRAY)
+        if claude is not None:
+            lines.append(_window_line("5-hour", claude.session_pct,
+                                      claude.session_resets_at, now))
+            lines.append(_window_line("Weekly", claude.weekly_pct,
+                                      claude.weekly_resets_at, now))
+            if stale_claude:
+                lines.append(_STALE_NOTE)
+        else:
+            lines.append((claude_note or "unavailable") + " | color=" + GRAY)
 
+    if display_mode in ("both", "codex"):
+        lines.append("Codex | color=" + GRAY)
+        if codex is not None:
+            lines.append(_window_line("5-hour", codex.primary_pct,
+                                      codex.primary_resets_at, now))
+            lines.append(_window_line("Weekly", codex.secondary_pct,
+                                      codex.secondary_resets_at, now))
+            if stale_codex:
+                lines.append(_STALE_NOTE)
+        else:
+            lines.append((codex_note or "unavailable") + " | color=" + GRAY)
+
+    lines.append("---")
+    lines.append("Display | color=" + GRAY)
+    labels = {"claude": "Claude", "codex": "Codex", "both": "Both"}
+    for mode in ("claude", "codex", "both"):
+        label = f"Show: {labels[mode]}" + (" ✓" if mode == display_mode else "")
+        if cli is None:
+            lines.append(label)
+        else:
+            py, mod = cli
+            lines.append(f'{label} | bash="{py}" param1="{mod}" '
+                         f'param2="show" param3="{mode}" terminal=false refresh=true')
     lines.append("---")
     if boost_remaining:
         ends = (now + timedelta(seconds=boost_remaining)).astimezone().strftime("%-I:%M:%S %p")
@@ -271,7 +321,12 @@ def render_dropdown(
         else:
             lines.append(f'Refresh every 1 min for 30 min | bash="{py}" param1="{mod}" '
                          f'param2="boost" terminal=false refresh=true')
-    lines.append("Claude /usage · Codex /status for details | color=" + GRAY)
+    details = {
+        "claude": "Claude /usage for details",
+        "codex": "Codex /status for details",
+        "both": "Claude /usage · Codex /status for details",
+    }[display_mode]
+    lines.append(details + " | color=" + GRAY)
     return "\n".join(lines)
 
 
@@ -324,9 +379,9 @@ func color(_ hex: String) -> NSColor {
                    blue: CGFloat(v & 0xff)/255.0, alpha: 1.0)
 }
 
-// Per row: label, value, valueColor, timer, timerColor  (2 rows = 10 args).
+// Per row: label, value, valueColor, timer, timerColor.
 let a = CommandLine.arguments
-guard a.count >= 11 else { exit(1) }
+guard a.count >= 6 && (a.count - 1) % 5 == 0 else { exit(1) }
 let scale: CGFloat = CGFloat(Double(ProcessInfo.processInfo.environment["MB_SCALE"] ?? "3") ?? 3)
 let fontPt = CGFloat(Double(ProcessInfo.processInfo.environment["MB_FONT"] ?? "9") ?? 9)
 let padX = CGFloat(Double(ProcessInfo.processInfo.environment["MB_PADX"] ?? "2") ?? 2)
@@ -341,7 +396,8 @@ func run(_ s: String, _ hex: String) -> NSAttributedString {
 struct Row { let label, value, timer: NSAttributedString; let hasTimer: Bool }
 let sepGray = "#8e8e93"
 var rows: [Row] = []
-for i in [0, 1] {
+let rowCount = (a.count - 1) / 5
+for i in 0..<rowCount {
     let b = 1 + i * 5
     let hasTimer = !a[b+3].isEmpty
     rows.append(Row(label: run(a[b], "#ffffff"), value: run(a[b+1], a[b+2]),
@@ -361,7 +417,7 @@ let valueX = labelX + maxLabelW + spc
 let sepX = valueX + maxValueW + spc
 let timerX = sepX + sepW + spc
 let pxW = (anyTimer ? timerX + maxTimerW : valueX + maxValueW) + padX * scale
-let pxH = lh * 2 + gap * scale + padY * scale * 2
+let pxH = lh * CGFloat(rows.count) + gap * scale * CGFloat(max(0, rows.count - 1)) + padY * scale * 2
 
 guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(pxW),
         pixelsHigh: Int(pxH), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
@@ -371,8 +427,8 @@ rep.size = NSSize(width: pxW, height: pxH)
 NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
 for (i, row) in rows.enumerated() {
-    // origin bottom-left: row 0 (Claude) on top, row 1 (Codex) on the bottom
-    let y = (i == 1) ? padY * scale : padY * scale + lh + gap * scale
+    // origin bottom-left: draw row 0 at the top, later rows underneath.
+    let y = padY * scale + CGFloat(rows.count - 1 - i) * (lh + gap * scale)
     row.label.draw(at: NSPoint(x: labelX, y: y))
     row.value.draw(at: NSPoint(x: valueX, y: y))
     if row.hasTimer {
@@ -414,13 +470,13 @@ def ensure_renderer() -> Optional[str]:
 
 
 def render_menubar_image(rows: List["BarRow"]) -> Optional[str]:
-    """Render the two stacked rows (aligned, independently-colored value + timer)
+    """Render visible rows (aligned, independently-colored value + timer)
     to a base64 PNG, or None if Swift is unavailable."""
     binp = ensure_renderer()
-    if not binp or len(rows) < 2:
+    if not binp or not rows:
         return None
     args = []
-    for r in rows[:2]:
+    for r in rows:
         args += [r.label, r.value, r.value_color, r.timer, r.timer_color]
     env = dict(os.environ,
                MB_SCALE=str(_MENUBAR_SCALE), MB_FONT=str(_MENUBAR_FONT_PT),
@@ -726,7 +782,7 @@ def _detect_interval() -> int:
 
 def assemble_output(rows, claude, codex, now, interval_s, stale_c, stale_x,
                     note_c, note_x, image_b64,
-                    boost_remaining=None, cli=None) -> str:
+                    boost_remaining=None, cli=None, display_mode="both") -> str:
     """Pure: build the SwiftBar output (menu-bar line + dropdown). The next-check
     time lives only in the dropdown; the menu bar shows just the image."""
     if image_b64:
@@ -734,7 +790,7 @@ def assemble_output(rows, claude, codex, now, interval_s, stale_c, stale_x,
     else:  # graceful fallback when Swift rendering is unavailable
         first = " · ".join(_bar_row_text(r) for r in rows)
     dropdown = render_dropdown(claude, codex, now, interval_s, stale_c, stale_x,
-                               note_c, note_x, boost_remaining, cli)
+                               note_c, note_x, boost_remaining, cli, display_mode)
     return first + "\n" + dropdown
 
 
@@ -812,11 +868,12 @@ def build_output(now: datetime, interval_s: Optional[int] = None) -> str:
     effective = BOOST_INTERVAL_S if boost_rem else base
     claude, stale_c, note_c = _get_claude(now_ms)
     codex, stale_x, note_x = _get_codex(now_ms)
-    rows = menubar_rows(claude, codex, now)
+    display_mode = display_mode_load()
+    rows = filter_menubar_rows(menubar_rows(claude, codex, now), display_mode)
     image_b64 = render_menubar_image(rows)
     cli = (sys.executable, os.path.abspath(__file__))
     return assemble_output(rows, claude, codex, now, effective, stale_c, stale_x,
-                           note_c, note_x, image_b64, boost_rem, cli)
+                           note_c, note_x, image_b64, boost_rem, cli, display_mode)
 
 
 def main() -> None:
@@ -829,6 +886,9 @@ if __name__ == "__main__":
         boost_start()
     elif _cmd == "stop":
         boost_stop()
+    elif _cmd == "show":
+        display_mode_save(sys.argv[2] if len(sys.argv) > 2 else "both")
+        _swiftbar_refresh()
     elif _cmd == "_boostloop":
         boost_loop()
     else:

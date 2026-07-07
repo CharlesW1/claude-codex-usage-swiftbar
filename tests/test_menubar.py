@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 from claude_usage import (
-    menubar_rows, timer_color, next_check_label,
+    menubar_rows, timer_color, next_check_label, filter_menubar_rows,
     Usage, CodexUsage, WHITE, GREEN, ORANGE, RED, GRAY,
 )
 
@@ -43,6 +43,18 @@ class TestMenubarRows(unittest.TestCase):
         rows = menubar_rows(CLAUDE, None, NOW)
         self.assertEqual((rows[1].label, rows[1].value, rows[1].value_color),
                          ("Cx", "—", GRAY))
+
+    def test_filter_can_show_only_claude(self):
+        rows = filter_menubar_rows(menubar_rows(CLAUDE, CODEX, NOW), "claude")
+        self.assertEqual([r.label for r in rows], ["C"])
+
+    def test_filter_can_show_only_codex(self):
+        rows = filter_menubar_rows(menubar_rows(CLAUDE, CODEX, NOW), "codex")
+        self.assertEqual([r.label for r in rows], ["Cx"])
+
+    def test_filter_defaults_to_both(self):
+        rows = filter_menubar_rows(menubar_rows(CLAUDE, CODEX, NOW), "both")
+        self.assertEqual([r.label for r in rows], ["C", "Cx"])
 
 
 class TestNextCheckLabel(unittest.TestCase):
