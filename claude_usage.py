@@ -114,10 +114,16 @@ class Usage:
 
 @dataclass
 class CodexUsage:
-    primary_pct: float               # 5-hour window, % used
+    # Codex's window model has changed shape before (mid-2026 it dropped the
+    # 5-hour tier), so a window is present-or-absent: pct is None when that
+    # tier has no limit, and *_window_s carries the payload's own duration so
+    # labels track reality instead of hardcoding "5-hour"/"Weekly".
+    primary_pct: Optional[float]     # % used; None = window absent
     primary_resets_at: Optional[str]
-    secondary_pct: float             # 7-day window, % used
+    secondary_pct: Optional[float]
     secondary_resets_at: Optional[str]
+    primary_window_s: Optional[int] = None    # limit_window_seconds
+    secondary_window_s: Optional[int] = None
 
 
 class UsageError(Exception):
@@ -133,23 +139,49 @@ def _epoch_to_iso(epoch) -> Optional[str]:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
 
+def _parse_codex_window(w) -> Tuple[Optional[float], Optional[str], Optional[int]]:
+    """(pct, resets_at_iso, window_seconds) for one rate-limit window.
+    Codex sends null (or omits) a window when that tier has no limit — e.g.
+    mid-2026 the 5-hour tier disappeared — so non-dict means absent, all None."""
+    if not isinstance(w, dict):
+        return None, None, None
+    try:
+        pct = float(w.get("used_percent") or 0.0)
+    except (TypeError, ValueError):
+        pct = 0.0
+    win = w.get("limit_window_seconds")
+    win = int(win) if isinstance(win, (int, float)) and win > 0 else None
+    return pct, _epoch_to_iso(w.get("reset_at")), win
+
+
 def parse_codex(data: dict) -> CodexUsage:
     """Parse chatgpt.com/backend-api/wham/usage. Codex reports used_percent,
     matching Claude's 'utilization' — no remaining->used conversion needed."""
     try:
         rl = data["rate_limit"]
-        # A window is present-but-null when that tier has no active limit; treat
-        # it as an empty dict so it reads as 0% / no reset instead of crashing.
-        pw = rl.get("primary_window") or {}
-        sw = rl.get("secondary_window") or {}
+        p_pct, p_resets, p_win = _parse_codex_window(rl.get("primary_window"))
+        s_pct, s_resets, s_win = _parse_codex_window(rl.get("secondary_window"))
         return CodexUsage(
-            primary_pct=float(pw.get("used_percent") or 0.0),
-            primary_resets_at=_epoch_to_iso(pw.get("reset_at")),
-            secondary_pct=float(sw.get("used_percent") or 0.0),
-            secondary_resets_at=_epoch_to_iso(sw.get("reset_at")),
+            primary_pct=p_pct, primary_resets_at=p_resets,
+            secondary_pct=s_pct, secondary_resets_at=s_resets,
+            primary_window_s=p_win, secondary_window_s=s_win,
         )
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise UsageError("bad_response", f"unexpected codex payload: {exc}")
+
+
+def window_label(window_s: Optional[int], default: str) -> str:
+    """Human label for a rate-limit window duration. Falls back to the legacy
+    default when the payload (or an old cache) doesn't report the duration."""
+    if not window_s:
+        return default
+    if window_s >= 6 * 86400:
+        return "Weekly"
+    if window_s >= 47 * 3600:
+        return f"{round(window_s / 86400)}-day"
+    if window_s >= 20 * 3600:
+        return "Daily"
+    return f"{max(1, round(window_s / 3600))}-hour"
 
 
 def _parse_fable(data: dict) -> Tuple[Optional[float], Optional[str]]:
@@ -217,17 +249,22 @@ def _has_reset(resets_at: Optional[str]) -> bool:
 
 # Timer color reflects time left until reset: the sooner it resets the better,
 # so a near-imminent reset is the "best" tier (white), a long wait is red.
-TIMER_BEST_MAX_S = 900      # <= 15m left -> white (best)
-TIMER_SOON_MAX_S = 3600     # <= 1h left  -> green
-TIMER_MID_MAX_S = 10800     # <= 3h left  -> orange; longer -> red
+# Tiers are fractions of the window so a weekly limit isn't judged on the
+# 5-hour clock (it would sit red all week). The fractions are the historical
+# 5h absolutes (15m/1h/3h of 18000s), so 5h windows behave exactly as before.
+TIMER_DEFAULT_WINDOW_S = 18000
+TIMER_BEST_MAX_FRAC = 900 / 18000    # <= 5% of window left  -> white (best)
+TIMER_SOON_MAX_FRAC = 3600 / 18000   # <= 20% left           -> green
+TIMER_MID_MAX_FRAC = 10800 / 18000   # <= 60% left           -> orange; else red
 
 
-def timer_color(seconds_left: float) -> str:
-    if seconds_left <= TIMER_BEST_MAX_S:
+def timer_color(seconds_left: float, window_s: Optional[int] = None) -> str:
+    window = window_s or TIMER_DEFAULT_WINDOW_S
+    if seconds_left <= window * TIMER_BEST_MAX_FRAC:
         return WHITE
-    if seconds_left <= TIMER_SOON_MAX_S:
+    if seconds_left <= window * TIMER_SOON_MAX_FRAC:
         return GREEN
-    if seconds_left <= TIMER_MID_MAX_S:
+    if seconds_left <= window * TIMER_MID_MAX_FRAC:
         return ORANGE
     return RED
 
@@ -241,23 +278,34 @@ class BarRow:
     timer_color: str     # by time-left
 
 
-def _bar_row(tag: str, pct: float, resets_at: Optional[str], now: datetime) -> "BarRow":
+def _bar_row(tag: str, pct: float, resets_at: Optional[str], now: datetime,
+             window_s: Optional[int] = None) -> "BarRow":
     if _has_reset(resets_at):
         secs = time_until(resets_at, now)
         return BarRow(tag, _pct(pct), severity_color(pct),
-                      format_duration(secs, compact=True), timer_color(secs))
+                      format_duration(secs, compact=True),
+                      timer_color(secs, window_s))
     return BarRow(tag, _pct(pct), severity_color(pct), "", GRAY)
 
 
 def menubar_rows(
     claude: Optional["Usage"], codex: Optional["CodexUsage"], now: datetime
 ) -> List["BarRow"]:
-    """Two stacked rows: Claude 5h session over Codex 5h, each carrying an
-    independently-colored value and reset timer."""
+    """Two stacked rows: Claude 5h session over Codex's tightest window, each
+    carrying an independently-colored value and reset timer."""
     c = _bar_row("C", claude.session_pct, claude.session_resets_at, now) \
         if claude is not None else BarRow("C", "—", GRAY, "", GRAY)
-    x = _bar_row("Cx", codex.primary_pct, codex.primary_resets_at, now) \
-        if codex is not None else BarRow("Cx", "—", GRAY, "", GRAY)
+    # Codex's window set is fluid: use the first window it actually has
+    # (primary, else secondary); em-dash only when there are none at all. The
+    # window duration rides along so timer tiers match the window's own scale.
+    if codex is not None and codex.primary_pct is not None:
+        x = _bar_row("Cx", codex.primary_pct, codex.primary_resets_at, now,
+                     codex.primary_window_s)
+    elif codex is not None and codex.secondary_pct is not None:
+        x = _bar_row("Cx", codex.secondary_pct, codex.secondary_resets_at, now,
+                     codex.secondary_window_s)
+    else:
+        x = BarRow("Cx", "—", GRAY, "", GRAY)
     return [c, x]
 
 
@@ -302,6 +350,7 @@ def render_dropdown(
     claude_note: Optional[str] = None, codex_note: Optional[str] = None,
     boost_remaining: Optional[int] = None, cli: Optional[Tuple[str, str]] = None,
     display_mode: str = "both", detail_color: str = GRAY,
+    claude_help: Optional[str] = None, codex_help: Optional[str] = None,
 ) -> str:
     display_mode = normalize_display_mode(display_mode)
     lines = ["---"]
@@ -324,10 +373,19 @@ def render_dropdown(
     if display_mode in ("both", "codex"):
         lines.append("Codex | color=" + GRAY)
         if codex is not None:
-            lines.append(_window_line("5-hour", codex.primary_pct,
-                                      codex.primary_resets_at, now, detail_color))
-            lines.append(_window_line("Weekly", codex.secondary_pct,
-                                      codex.secondary_resets_at, now, detail_color))
+            # Render only the windows Codex actually has; labels come from the
+            # payload's own durations (legacy defaults for old cached data).
+            windows = [
+                (window_label(codex.primary_window_s, "5-hour"),
+                 codex.primary_pct, codex.primary_resets_at),
+                (window_label(codex.secondary_window_s, "Weekly"),
+                 codex.secondary_pct, codex.secondary_resets_at),
+            ]
+            present = [w for w in windows if w[1] is not None]
+            for lbl, pct, resets in present:
+                lines.append(_window_line(lbl, pct, resets, now, detail_color))
+            if not present:
+                lines.append("no active limits | color=" + GRAY)
             if stale_codex:
                 lines.append(_STALE_NOTE)
         else:
@@ -368,6 +426,11 @@ def render_dropdown(
         "both": "Claude /usage · Codex /status for details",
     }[display_mode]
     lines.append(details + " | color=" + GRAY)
+    # Actionable remedies for provider errors, right under the details line so
+    # the note ("Keychain locked", "signed out", ...) has a matching "do this".
+    for help_text in (claude_help, codex_help):
+        if help_text:
+            lines.append(help_text + " | color=" + GRAY)
     return "\n".join(lines)
 
 
@@ -621,6 +684,8 @@ def codex_cache_save(c: CodexUsage) -> None:
                 "primary_resets_at": c.primary_resets_at,
                 "secondary_pct": c.secondary_pct,
                 "secondary_resets_at": c.secondary_resets_at,
+                "primary_window_s": c.primary_window_s,
+                "secondary_window_s": c.secondary_window_s,
             }, f)
     except OSError:
         pass
@@ -635,6 +700,8 @@ def codex_cache_load() -> Optional[CodexUsage]:
             primary_resets_at=d["primary_resets_at"],
             secondary_pct=d["secondary_pct"],
             secondary_resets_at=d["secondary_resets_at"],
+            primary_window_s=d.get("primary_window_s"),
+            secondary_window_s=d.get("secondary_window_s"),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -782,10 +849,26 @@ _CODEX_NOTES = {
     "bad_response": "rate-limited or error",
 }
 
+# What the user can DO about each failure, shown at the bottom of the dropdown.
+# no_token also covers a missing keychain item (Claude Code moved/re-saved its
+# login), so the remedy is the same either way: re-sign-in via Claude Code.
+_CLAUDE_HELP = {
+    "no_token": "Claude fix: open Claude Code & sign in (/login); if no prompt, restart SwiftBar, then Check now",
+    "auth": "Claude fix: open Claude Code & sign in (/login), then Check now",
+    "offline": "Claude fix: check your connection, then Check now",
+    "bad_response": "Claude: temporary API error — retries at next check",
+}
+_CODEX_HELP = {
+    "no_token": "Codex fix: run `codex login` in a terminal, then Check now",
+    "auth": "Codex fix: run `codex login` in a terminal, then Check now",
+    "offline": "Codex fix: check your connection, then Check now",
+    "bad_response": "Codex: temporary API error — retries at next check",
+}
+
 
 def _get_claude(now_ms: int):
-    """Return (Usage|None, stale, note). Refreshes proactively/reactively and
-    falls back to the cached reading on a transient error."""
+    """Return (Usage|None, stale, note, help). Refreshes proactively/reactively
+    and falls back to the cached reading on a transient error."""
     try:
         token = current_token(now_ms)
         try:
@@ -798,29 +881,31 @@ def _get_claude(now_ms: int):
                 raise
         usage = parse_usage(data)
         cache_save(usage)
-        return usage, False, None
+        return usage, False, None, None
     except UsageError as err:
         if err.kind in _TRANSIENT_KINDS:
             cached = cache_load()
             if cached is not None:
-                return cached, True, None
-        return None, False, _CLAUDE_NOTES.get(err.kind, "unavailable")
+                return cached, True, None, None
+        return (None, False, _CLAUDE_NOTES.get(err.kind, "unavailable"),
+                _CLAUDE_HELP.get(err.kind))
 
 
 def _get_codex(now_ms: int):
-    """Return (CodexUsage|None, stale, note), with cache fallback on transient."""
+    """Return (CodexUsage|None, stale, note, help), cache fallback on transient."""
     try:
         creds = read_codex_creds()
         data = fetch_codex(creds["access_token"], creds["account_id"])
         cx = parse_codex(data)
         codex_cache_save(cx)
-        return cx, False, None
+        return cx, False, None, None
     except UsageError as err:
         if err.kind in _TRANSIENT_KINDS:
             cached = codex_cache_load()
             if cached is not None:
-                return cached, True, None
-        return None, False, _CODEX_NOTES.get(err.kind, "unavailable")
+                return cached, True, None, None
+        return (None, False, _CODEX_NOTES.get(err.kind, "unavailable"),
+                _CODEX_HELP.get(err.kind))
 
 
 def _detect_interval() -> int:
@@ -832,7 +917,7 @@ def _detect_interval() -> int:
 def assemble_output(rows, claude, codex, now, interval_s, stale_c, stale_x,
                     note_c, note_x, image_b64,
                     boost_remaining=None, cli=None, display_mode="both",
-                    detail_color=GRAY) -> str:
+                    detail_color=GRAY, help_c=None, help_x=None) -> str:
     """Pure: build the SwiftBar output (menu-bar line + dropdown). The next-check
     time lives only in the dropdown; the menu bar shows just the image."""
     if image_b64:
@@ -841,7 +926,7 @@ def assemble_output(rows, claude, codex, now, interval_s, stale_c, stale_x,
         first = " · ".join(_bar_row_text(r) for r in rows)
     dropdown = render_dropdown(claude, codex, now, interval_s, stale_c, stale_x,
                                note_c, note_x, boost_remaining, cli, display_mode,
-                               detail_color)
+                               detail_color, help_c, help_x)
     return first + "\n" + dropdown
 
 
@@ -917,14 +1002,15 @@ def build_output(now: datetime, interval_s: Optional[int] = None) -> str:
     now_ms = int(now.timestamp() * 1000)
     boost_rem = boost_remaining(now.timestamp())
     effective = BOOST_INTERVAL_S if boost_rem else base
-    claude, stale_c, note_c = _get_claude(now_ms)
-    codex, stale_x, note_x = _get_codex(now_ms)
+    claude, stale_c, note_c, help_c = _get_claude(now_ms)
+    codex, stale_x, note_x, help_x = _get_codex(now_ms)
     display_mode = display_mode_load()
     rows = filter_menubar_rows(menubar_rows(claude, codex, now), display_mode)
     image_b64 = render_menubar_image(rows)
     cli = (sys.executable, os.path.abspath(__file__))
     return assemble_output(rows, claude, codex, now, effective, stale_c, stale_x,
-                           note_c, note_x, image_b64, boost_rem, cli, display_mode)
+                           note_c, note_x, image_b64, boost_rem, cli, display_mode,
+                           GRAY, help_c, help_x)
 
 
 def main() -> None:

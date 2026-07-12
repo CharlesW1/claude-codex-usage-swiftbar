@@ -21,6 +21,19 @@ class TestTimerColor(unittest.TestCase):
     def test_far_is_red(self):
         self.assertEqual(timer_color(4 * 3600), RED)       # 4h left
 
+    # A weekly window must scale its tiers (fractions of the window), not
+    # reuse the 5-hour absolutes — otherwise it sits red for ~7 days straight.
+    def test_weekly_window_scales_tiers(self):
+        wk = 7 * 86400
+        self.assertEqual(timer_color(6 * 3600, wk), WHITE)    # 6h left ≈ 3.6%
+        self.assertEqual(timer_color(1 * 86400, wk), GREEN)   # 1d ≈ 14%
+        self.assertEqual(timer_color(3 * 86400, wk), ORANGE)  # 3d ≈ 43%
+        self.assertEqual(timer_color(6 * 86400, wk), RED)     # 6d ≈ 86%
+
+    def test_default_window_matches_legacy_5h_behavior(self):
+        for secs in (10 * 60, 30 * 60, 2 * 3600, 4 * 3600):
+            self.assertEqual(timer_color(secs), timer_color(secs, 18000))
+
 
 class TestMenubarRows(unittest.TestCase):
     def test_value_and_timer_colored_independently(self):
@@ -55,6 +68,14 @@ class TestMenubarRows(unittest.TestCase):
     def test_filter_defaults_to_both(self):
         rows = filter_menubar_rows(menubar_rows(CLAUDE, CODEX, NOW), "both")
         self.assertEqual([r.label for r in rows], ["C", "Cx"])
+
+    def test_codex_weekly_row_uses_weekly_tiers(self):
+        # Weekly-only Codex (2026 shape), resets in ~1d: green under weekly
+        # tiers, would be red under the 5-hour absolutes.
+        cx = CodexUsage(11.0, "2026-06-29T07:18:00+00:00", None, None,
+                        primary_window_s=7 * 86400)
+        x = menubar_rows(CLAUDE, cx, NOW)[1]
+        self.assertEqual(x.timer_color, GREEN)
 
 
 class TestNextCheckLabel(unittest.TestCase):

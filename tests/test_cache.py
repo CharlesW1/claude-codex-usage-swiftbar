@@ -42,6 +42,12 @@ class TestCacheRoundTrip(CacheBase):
         codex_cache_save(CX)
         self.assertEqual(codex_cache_load(), CX)
 
+    def test_codex_round_trip_preserves_window_durations(self):
+        cx = CodexUsage(6.0, "2026-07-04T12:00:00+00:00", None, None,
+                        primary_window_s=604800)
+        codex_cache_save(cx)
+        self.assertEqual(codex_cache_load(), cx)
+
     def test_claude_round_trip_preserves_fable(self):
         u = Usage(46.0, "2026-06-28T10:30:00+00:00", 23.0,
                   "2026-07-04T12:00:00+00:00",

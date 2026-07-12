@@ -63,6 +63,30 @@ class TestRenderDropdown(unittest.TestCase):
         self.assertIn('--Show: Both | bash="/py" param1="/mod.py" '
                       'param2="show" param3="both" terminal=false refresh=true', out)
 
+    def test_codex_weekly_only_shape(self):
+        # Mid-2026 Codex shape: one weekly window, no 5-hour tier. The single
+        # window must render with its real label and no phantom second line.
+        cx = CodexUsage(6.0, "2026-07-04T12:00:00+00:00", None, None,
+                        primary_window_s=604800)
+        out = render_dropdown(None, cx, NOW, 300, display_mode="codex")
+        self.assertIn("Weekly  6%", out)
+        self.assertNotIn("5-hour", out)
+
+    def test_codex_two_window_shape_regresses(self):
+        # If the 5-hour window comes back, both lines reappear, labeled from
+        # the payload's own durations.
+        cx = CodexUsage(50.0, "2026-06-28T09:00:00+00:00",
+                        28.0, "2026-07-04T12:00:00+00:00",
+                        primary_window_s=18000, secondary_window_s=604800)
+        out = render_dropdown(None, cx, NOW, 300, display_mode="codex")
+        self.assertIn("5-hour  50%", out)
+        self.assertIn("Weekly  28%", out)
+
+    def test_codex_no_windows_shows_note(self):
+        cx = CodexUsage(None, None, None, None)
+        out = render_dropdown(None, cx, NOW, 300, display_mode="codex")
+        self.assertIn("no active limits", out)
+
     def test_stale_claude_marked(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300, stale_claude=True)
         self.assertIn("last reading", out)
@@ -84,6 +108,20 @@ class TestRenderDropdown(unittest.TestCase):
                        "2026-07-04T12:00:00+00:00",
                        fable_pct=0.0, fable_resets_at="2026-07-04T12:00:00+00:00")
         self.assertIn("Fable  0%", render_dropdown(claude, CODEX, NOW, 300))
+
+    def test_provider_error_help_rendered_under_details(self):
+        out = render_dropdown(None, CODEX, NOW, 300,
+                              claude_note="Keychain locked — allow access",
+                              claude_help="open Claude Code and sign in again, "
+                                          "then Check now")
+        lines = out.splitlines()
+        details_i = next(i for i, l in enumerate(lines) if "/usage" in l)
+        self.assertIn("open Claude Code and sign in again", lines[details_i + 1])
+        self.assertIn(f"color={GRAY}", lines[details_i + 1])
+
+    def test_no_help_line_when_providers_healthy(self):
+        out = render_dropdown(CLAUDE, CODEX, NOW, 300)
+        self.assertNotIn("sign in", out)
 
     def test_null_reset_does_not_crash(self):
         codex = CodexUsage(0.0, None, 5.0, "2026-07-04T12:00:00+00:00")
