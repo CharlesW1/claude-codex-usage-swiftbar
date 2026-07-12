@@ -63,7 +63,7 @@ class TestBothProviders(BuildBase):
         claude_usage.fetch_codex = lambda t, a: CODEX_GOOD
         out = build_output(NOW, interval_s=300)
         self.assertIn("C —", out.splitlines()[0])
-        self.assertIn("Keychain locked", out)
+        self.assertIn("not signed in", out)
         self.assertIn("5-hour  50%", out)
 
     def test_claude_auth_after_forced_refresh_still_fails(self):

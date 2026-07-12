@@ -17,6 +17,10 @@ KEYCHAIN_SERVICE = "Claude Code-credentials"
 BETA_HEADER = "oauth-2025-04-20"
 
 CODEX_AUTH_PATH = os.path.expanduser("~/.codex/auth.json")
+# Claude Code stores its OAuth blob in the macOS Keychain on some installs and
+# in this plaintext file on others (current CLI versions favor the file) —
+# read_credentials() tries the Keychain first, then falls back here.
+CLAUDE_CODE_CREDS_PATH = os.path.expanduser("~/.claude/.credentials.json")
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last.json")
 CODEX_CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last_codex.json")
@@ -734,23 +738,35 @@ def _keychain_account() -> str:
     return m.group(1) if m else os.environ.get("USER", "")
 
 
+def _read_claude_code_file_creds() -> Optional[dict]:
+    try:
+        with open(CLAUDE_CODE_CREDS_PATH) as f:
+            return json.load(f)["claudeAiOauth"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def read_credentials() -> dict:
-    """Return the freshest credentials, merging the Keychain blob with our own
-    cache file (whichever has the later expiry wins, so Claude Code's refreshes
-    and ours stay in sync)."""
+    """Return the freshest credentials: try the Keychain, fall back to Claude
+    Code's own credentials file, then merge with our refresh cache (whichever
+    has the later expiry wins, so Claude Code's refreshes and ours stay in sync)."""
+    oauth = None
     try:
         out = subprocess.run(
             ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
             capture_output=True, text=True, timeout=10,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise UsageError("no_token", str(exc))
-    if out.returncode != 0 or not out.stdout.strip():
-        raise UsageError("no_token", out.stderr.strip() or "keychain item not found")
-    try:
-        oauth = json.loads(out.stdout)["claudeAiOauth"]
-    except (ValueError, KeyError, TypeError) as exc:
-        raise UsageError("no_token", f"bad credential payload: {exc}")
+        if out.returncode == 0 and out.stdout.strip():
+            oauth = json.loads(out.stdout)["claudeAiOauth"]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        oauth = None
+
+    if oauth is None:
+        oauth = _read_claude_code_file_creds()
+
+    if oauth is None:
+        raise UsageError("no_token",
+                         "no credentials in Keychain or ~/.claude/.credentials.json")
 
     cached = creds_file_load()
     if cached and (cached.get("expiresAt") or 0) > (oauth.get("expiresAt") or 0):
@@ -837,7 +853,7 @@ def current_token(now_ms: int, force: bool = False) -> str:
 _TRANSIENT_KINDS = ("offline", "bad_response")
 
 _CLAUDE_NOTES = {
-    "no_token": "Keychain locked — allow access",
+    "no_token": "not signed in — open Claude Code",
     "auth": "auth expired — open Claude Code",
     "offline": "offline",
     "bad_response": "rate-limited or error",
