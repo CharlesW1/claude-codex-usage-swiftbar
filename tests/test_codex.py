@@ -47,6 +47,26 @@ class TestParseCodex(unittest.TestCase):
         self.assertIsNone(c.secondary_resets_at)
         self.assertEqual(c.primary_pct, 0.0)
 
+    def test_null_secondary_window_does_not_crash(self):
+        # Codex returns a present-but-null window when there's no active limit
+        # in that tier. It must degrade to 0% / no reset, not raise.
+        data = {"rate_limit": {
+            "primary_window": {"used_percent": 6, "reset_at": 1784489356},
+            "secondary_window": None,
+        }}
+        c = parse_codex(data)
+        self.assertEqual(c.primary_pct, 6.0)
+        self.assertEqual(c.secondary_pct, 0.0)
+        self.assertIsNone(c.secondary_resets_at)
+
+    def test_both_windows_null_does_not_crash(self):
+        c = parse_codex({"rate_limit":
+                         {"primary_window": None, "secondary_window": None}})
+        self.assertEqual(c.primary_pct, 0.0)
+        self.assertEqual(c.secondary_pct, 0.0)
+        self.assertIsNone(c.primary_resets_at)
+        self.assertIsNone(c.secondary_resets_at)
+
     def test_bad_payload_raises(self):
         with self.assertRaises(UsageError) as ctx:
             parse_codex({"nope": 1})

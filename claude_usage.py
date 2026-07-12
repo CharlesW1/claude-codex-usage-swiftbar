@@ -138,15 +138,17 @@ def parse_codex(data: dict) -> CodexUsage:
     matching Claude's 'utilization' — no remaining->used conversion needed."""
     try:
         rl = data["rate_limit"]
-        pw = rl["primary_window"]
-        sw = rl["secondary_window"]
+        # A window is present-but-null when that tier has no active limit; treat
+        # it as an empty dict so it reads as 0% / no reset instead of crashing.
+        pw = rl.get("primary_window") or {}
+        sw = rl.get("secondary_window") or {}
         return CodexUsage(
             primary_pct=float(pw.get("used_percent") or 0.0),
             primary_resets_at=_epoch_to_iso(pw.get("reset_at")),
             secondary_pct=float(sw.get("used_percent") or 0.0),
             secondary_resets_at=_epoch_to_iso(sw.get("reset_at")),
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise UsageError("bad_response", f"unexpected codex payload: {exc}")
 
 
