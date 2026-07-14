@@ -12,9 +12,9 @@ A macOS [SwiftBar](https://swiftbar.app/) / xbar-style menu-bar usage monitor fo
 reset countdowns, rate-limit status, and per-window detail as color-coded
 status-bar lines.
 
-![Generated menu-bar sample](assets/menu-bar-sample.png)
+![2x2 menu-bar grid sample](assets/menu-bar-sample.png)
 
-![Generated dropdown sample](assets/dropdown-sample.png)
+![Dropdown with Claude, Codex, and Antigravity sections](assets/dropdown-sample.png)
 
 The menu-bar grid shows Claude (`Cld`), Codex (`Cdx`), Antigravity Gemini (`AgG`), and Antigravity External (`AgX`):
 
