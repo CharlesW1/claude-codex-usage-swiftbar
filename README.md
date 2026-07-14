@@ -33,7 +33,7 @@ comparable.
 - 5-hour and weekly limit windows with reset countdowns.
 - Color-coded usage and reset timing so rate-limit risk is visible at a glance.
 - Dropdown detail for Claude `/usage`, Codex `/status`, and Antigravity windows.
-- Manual **Refresh now** plus a temporary 1-minute refresh boost for 30 minutes.
+- Manual **Check now** plus a temporary 1-minute refresh boost for 30 minutes.
 - Local-only token reads from the macOS Keychain (or `~/.claude/.credentials.json`),
   `~/.codex/auth.json`, and Antigravity's local token file; no Python packages
   required.
@@ -64,7 +64,23 @@ unavailable state.
    xcode-select --install
    ```
 
-3. Create a dedicated SwiftBar plugin folder that contains **only** the two
+3. Verify that Python 3.9 or newer is available:
+
+   ```bash
+   python3 --version
+   ```
+
+   If it is missing, install it with `brew install python`.
+
+4. Clone the repository (recommended, because updates are easy with
+   `git pull`):
+
+   ```bash
+   git clone https://github.com/CharlesW1/claude-codex-usage-swiftbar.git
+   cd claude-codex-usage-swiftbar
+   ```
+
+5. Create a dedicated SwiftBar plugin folder that contains **only** the two
    plugin files. Do not point SwiftBar at this git repo, because SwiftBar runs
    every file it finds recursively.
 
@@ -76,20 +92,35 @@ unavailable state.
    ln -sf "$PWD/claude_usage.py" ~/swiftbar-plugins/claude-codex-usage/claude_usage.py
    ```
 
-4. Launch SwiftBar, open Preferences, and set the plugin folder to:
+   **Alternatively, install from the latest GitHub Release without cloning:**
+
+   ```bash
+   mkdir -p ~/swiftbar-plugins/claude-codex-usage
+   base="https://github.com/CharlesW1/claude-codex-usage-swiftbar/releases/latest/download"
+   curl -fL "$base/claude-usage.300s.py" \
+     -o ~/swiftbar-plugins/claude-codex-usage/claude-usage.300s.py
+   curl -fL "$base/claude_usage.py" \
+     -o ~/swiftbar-plugins/claude-codex-usage/claude_usage.py
+   chmod +x ~/swiftbar-plugins/claude-codex-usage/claude-usage.300s.py
+   ```
+
+   The `chmod +x` matters: downloaded release assets do not keep the
+   executable bit.
+
+6. Launch SwiftBar, open Preferences, and set the plugin folder to:
 
    ```text
    ~/swiftbar-plugins/claude-codex-usage
    ```
 
-5. Make sure Claude Code and/or Codex are signed in:
+7. Sign in locally to each provider you want to monitor:
 
-   ```bash
-   claude
-   codex login
-   ```
+   - **Claude Code:** open `claude` and run `/login` if needed.
+   - **Codex:** run `codex login`.
+   - **Antigravity:** open the Antigravity app (or run `agy`) and complete
+     Google sign-in there.
 
-6. In SwiftBar, choose **Refresh All**.
+8. In SwiftBar, choose **Refresh All**.
 
 On first run, macOS may ask for Keychain access to `Claude Code-credentials`;
 choose **Always Allow**. The first run also compiles the embedded Swift renderer
@@ -118,8 +149,8 @@ Click the item to open the dropdown. It shows:
 - **Display** options with per-provider **Show** checkboxes. The selected
   options are saved locally in `~/.cache/claude-usage/display_mode`.
 - The next scheduled check time.
-- **Refresh now**, which asks SwiftBar to rerun the plugin immediately.
-- **Refresh every 1 min for 30 min**, which temporarily triggers SwiftBar once a
+- **Check now**, which asks SwiftBar to rerun the plugin immediately.
+- **Check every 1 min for 30 min**, which temporarily triggers SwiftBar once a
   minute for 30 minutes. While active, the dropdown shows **Stop 1-minute
   boost**.
 
@@ -199,6 +230,13 @@ requests go only to Anthropic, OpenAI, and Google endpoints, each authenticated 
 - `Cdx —` or `signed out — run codex login`: run `codex login`.
 - `last reading`: a provider was rate-limited or offline; the plugin is showing
   the previous successful reading.
+- `AgG —` / `AgX —` or `not signed in — open Antigravity`: open
+  Antigravity and complete Google sign-in, then choose **Check now**.
+- `token expired — open Antigravity`: open Antigravity so it can refresh its
+  login, then choose **Check now**.
+- Antigravity shows `offline`: check your connection, then choose **Check now**.
+- Antigravity shows `rate-limited or error`: this is usually temporary; the
+  plugin retries at the next check.
 - Plain text instead of the colored two-line image: install Xcode Command Line
   Tools so `swiftc` is available, then refresh SwiftBar.
 - SwiftBar shows broken `[?]` plugins: your plugin folder contains extra files.
