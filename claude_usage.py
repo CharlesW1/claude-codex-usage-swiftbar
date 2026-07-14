@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -24,6 +25,11 @@ CLAUDE_CODE_CREDS_PATH = os.path.expanduser("~/.claude/.credentials.json")
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last.json")
 CODEX_CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last_codex.json")
+AGY_TOKEN_PATH = os.path.expanduser("~/.gemini/antigravity-cli/antigravity-oauth-token")
+AGY_CACHE_PATH = os.path.expanduser("~/.cache/claude-usage/last_agy.json")
+PERCENT_MODE_PATH = os.path.expanduser("~/.cache/claude-usage/percent_mode")
+# Read the short-lived provider-specific setting once as a migration fallback.
+LEGACY_AGY_PERCENT_MODE_PATH = os.path.expanduser("~/.cache/claude-usage/agy_percent_mode")
 CREDS_PATH = os.path.expanduser("~/.cache/claude-usage/creds.json")
 DISPLAY_MODE_PATH = os.path.expanduser("~/.cache/claude-usage/display_mode")
 BOOST_UNTIL_PATH = os.path.expanduser("~/.cache/claude-usage/boost_until")
@@ -40,12 +46,88 @@ GREEN = "#34c759"
 ORANGE = "#ff9500"
 RED = "#ff3b30"
 GRAY = "#8e8e93"
+AGY_PROD_HOST = "https://cloudcode-pa.googleapis.com"
+AGY_DAILY_HOST = "https://daily-cloudcode-pa.googleapis.com"
+
+PROVIDERS = ("claude", "codex", "agy")
 DISPLAY_MODES = ("both", "claude", "codex")
+PERCENT_MODES = ("used", "remaining")
 
 
 def normalize_display_mode(mode: Optional[str]) -> str:
     return mode if mode in DISPLAY_MODES else "both"
 
+
+
+def enabled_load() -> set[str]:
+    try:
+        with open(DISPLAY_MODE_PATH) as f:
+            raw = f.read().strip()
+            if not raw:
+                return set(PROVIDERS)
+            if raw == "none":
+                return set()
+            if raw == "both":
+                return set(PROVIDERS)
+
+            # Normalization
+            slugs = [s.strip().lower() for s in raw.split(",")]
+            res = {s for s in slugs if s in PROVIDERS}
+
+            # If after migration/normalization it's empty but wasn't "none", default it
+            if not res and raw not in ("none", ""):
+                return set(PROVIDERS)
+            return res
+    except OSError:
+        return set(PROVIDERS)
+
+def enabled_save(enabled: set[str]) -> None:
+    try:
+        os.makedirs(os.path.dirname(DISPLAY_MODE_PATH), exist_ok=True)
+        with open(DISPLAY_MODE_PATH, "w") as f:
+            if not enabled:
+                f.write("none")
+            else:
+                f.write(",".join(sorted(enabled)))
+    except OSError:
+        pass
+
+def enabled_toggle(provider: str) -> None:
+    if provider not in PROVIDERS:
+        return
+    current = enabled_load()
+    if provider in current:
+        current.remove(provider)
+    else:
+        current.add(provider)
+    enabled_save(current)
+
+def percent_mode_load() -> str:
+    for path in (PERCENT_MODE_PATH, LEGACY_AGY_PERCENT_MODE_PATH):
+        try:
+            with open(path) as f:
+                mode = f.read().strip().lower()
+            if mode in PERCENT_MODES:
+                return mode
+        except OSError:
+            pass
+    return "used"
+
+def percent_mode_save(mode: str) -> None:
+    if mode not in PERCENT_MODES:
+        return
+    try:
+        os.makedirs(os.path.dirname(PERCENT_MODE_PATH), exist_ok=True)
+        with open(PERCENT_MODE_PATH, "w") as f:
+            f.write(mode)
+    except OSError:
+        pass
+
+def _display_pct(pct: Optional[float], mode: str,
+                 stored_as_remaining: bool = False) -> Optional[float]:
+    if pct is None or ((mode == "remaining") == stored_as_remaining):
+        return pct
+    return max(0, min(100, 100 - pct))
 
 def display_mode_load() -> str:
     try:
@@ -114,6 +196,21 @@ class Usage:
     # 5-hour window of its own). None when the account has no Fable allotment.
     fable_pct: Optional[float] = None
     fable_resets_at: Optional[str] = None
+
+
+@dataclass
+class AgyUsage:
+    # Antigravity exposes the same two windows for each model family. Unlike
+    # Claude/Codex, its native UI reports percent remaining, so preserve that
+    # provider-specific convention here.
+    gemini_weekly_pct: Optional[float]
+    gemini_weekly_resets_at: Optional[str]
+    gemini_5h_pct: Optional[float]
+    gemini_5h_resets_at: Optional[str]
+    external_weekly_pct: Optional[float]
+    external_weekly_resets_at: Optional[str]
+    external_5h_pct: Optional[float]
+    external_5h_resets_at: Optional[str]
 
 
 @dataclass
@@ -283,43 +380,95 @@ class BarRow:
 
 
 def _bar_row(tag: str, pct: float, resets_at: Optional[str], now: datetime,
-             window_s: Optional[int] = None) -> "BarRow":
+             window_s: Optional[int] = None,
+             severity_pct: Optional[float] = None) -> "BarRow":
+    severity = pct if severity_pct is None else severity_pct
     if _has_reset(resets_at):
         secs = time_until(resets_at, now)
-        return BarRow(tag, _pct(pct), severity_color(pct),
-                      format_duration(secs, compact=True),
+        timer = (format_countdown(secs) if window_s and window_s >= 86400
+                 else format_duration(secs, compact=True))
+        return BarRow(tag, _pct(pct), severity_color(severity),
+                      timer,
                       timer_color(secs, window_s))
-    return BarRow(tag, _pct(pct), severity_color(pct), "", GRAY)
+    return BarRow(tag, _pct(pct), severity_color(severity), "", GRAY)
 
 
-def menubar_rows(
-    claude: Optional["Usage"], codex: Optional["CodexUsage"], now: datetime
-) -> List["BarRow"]:
-    """Two stacked rows: Claude 5h session over Codex's tightest window, each
-    carrying an independently-colored value and reset timer."""
-    c = _bar_row("C", claude.session_pct, claude.session_resets_at, now) \
-        if claude is not None else BarRow("C", "—", GRAY, "", GRAY)
-    # Codex's window set is fluid: use the first window it actually has
-    # (primary, else secondary); em-dash only when there are none at all. The
-    # window duration rides along so timer tiers match the window's own scale.
-    if codex is not None and codex.primary_pct is not None:
-        x = _bar_row("Cx", codex.primary_pct, codex.primary_resets_at, now,
-                     codex.primary_window_s)
-    elif codex is not None and codex.secondary_pct is not None:
-        x = _bar_row("Cx", codex.secondary_pct, codex.secondary_resets_at, now,
-                     codex.secondary_window_s)
+@dataclass
+class MenuTile:
+    row: "BarRow"
+    provider: str
+    logical_col: int
+    logical_row: int
+
+
+
+
+def menubar_tiles(claude: Optional["Usage"], codex: Optional["CodexUsage"],
+                  agy: Optional["AgyUsage"], now: datetime,
+                  percent_mode: str = "used") -> List[MenuTile]:
+    tiles = []
+    if claude is not None:
+        r = _bar_row("Cld", _display_pct(claude.session_pct, percent_mode),
+                     claude.session_resets_at, now,
+                     severity_pct=claude.session_pct)
     else:
-        x = BarRow("Cx", "—", GRAY, "", GRAY)
-    return [c, x]
+        r = BarRow("Cld", "—", GRAY, "", GRAY)
+    tiles.append(MenuTile(r, "claude", 0, 0))
 
+    if codex is not None:
+        if codex.primary_pct is not None:
+            x = _bar_row("Cdx", _display_pct(codex.primary_pct, percent_mode),
+                         codex.primary_resets_at, now, codex.primary_window_s,
+                         codex.primary_pct)
+        elif codex.secondary_pct is not None:
+            x = _bar_row("Cdx", _display_pct(codex.secondary_pct, percent_mode),
+                         codex.secondary_resets_at, now, codex.secondary_window_s,
+                         codex.secondary_pct)
+        else:
+            x = BarRow("Cdx", "—", GRAY, "", GRAY)
+    else:
+        x = BarRow("Cdx", "—", GRAY, "", GRAY)
+    tiles.append(MenuTile(x, "codex", 0, 1))
 
-def filter_menubar_rows(rows: List["BarRow"], display_mode: str) -> List["BarRow"]:
-    mode = normalize_display_mode(display_mode)
-    if mode == "claude":
-        return [r for r in rows if r.label == "C"]
-    if mode == "codex":
-        return [r for r in rows if r.label == "Cx"]
-    return rows
+    if agy is not None:
+        gemini = [(_display_pct(agy.gemini_5h_pct, percent_mode, True),
+                   agy.gemini_5h_resets_at, 18000),
+                  (_display_pct(agy.gemini_weekly_pct, percent_mode, True),
+                   agy.gemini_weekly_resets_at, 604800)]
+        gemini = [w for w in gemini if w[0] is not None]
+        gemini_primary = gemini[0] if gemini else None
+        if gemini_primary:
+            pct, resets, window_s = gemini_primary
+            remaining = (agy.gemini_5h_pct if agy.gemini_5h_pct is not None
+                         else agy.gemini_weekly_pct)
+            r_gem = _bar_row("AgG", pct, resets, now, window_s,
+                             100 - remaining)
+        else:
+            r_gem = BarRow("AgG", "—", GRAY, "", GRAY)
+
+        external = [(_display_pct(agy.external_5h_pct, percent_mode, True),
+                     agy.external_5h_resets_at, 18000),
+                    (_display_pct(agy.external_weekly_pct, percent_mode, True),
+                     agy.external_weekly_resets_at, 604800)]
+        external = [w for w in external if w[0] is not None]
+        external_primary = external[0] if external else None
+        if external_primary:
+            pct, resets, window_s = external_primary
+            remaining = (agy.external_5h_pct if agy.external_5h_pct is not None
+                         else agy.external_weekly_pct)
+            r_ext = _bar_row("AgX", pct, resets, now, window_s,
+                             100 - remaining)
+        else:
+            r_ext = BarRow("AgX", "—", GRAY, "", GRAY)
+    else:
+        r_gem = BarRow("AgG", "—", GRAY, "", GRAY)
+        r_ext = BarRow("AgX", "—", GRAY, "", GRAY)
+    tiles.append(MenuTile(r_gem, "agy", 1, 0))
+    tiles.append(MenuTile(r_ext, "agy", 1, 1))
+    return tiles
+
+def filter_menubar_tiles(tiles: List[MenuTile], enabled: set[str]) -> List[MenuTile]:
+    return [t for t in tiles if t.provider in enabled]
 
 
 def _bar_row_text(r: "BarRow") -> str:
@@ -355,35 +504,42 @@ def render_dropdown(
     boost_remaining: Optional[int] = None, cli: Optional[Tuple[str, str]] = None,
     display_mode: str = "both", detail_color: str = GRAY,
     claude_help: Optional[str] = None, codex_help: Optional[str] = None,
+    *,
+    agy: Optional["AgyUsage"] = None, stale_agy: bool = False, agy_note: Optional[str] = None, agy_help: Optional[str] = None,
+    enabled: Optional[set] = None, percent_mode: str = "used"
 ) -> str:
-    display_mode = normalize_display_mode(display_mode)
+    if enabled is None:
+        display_mode = normalize_display_mode(display_mode)
+        if display_mode == "both": enabled = set(PROVIDERS)
+        elif display_mode == "claude": enabled = {"claude"}
+        elif display_mode == "codex": enabled = {"codex"}
+        else: enabled = set()
+
     lines = ["---"]
 
-    if display_mode in ("both", "claude"):
+    if "claude" in enabled:
         lines.append("Claude | color=" + GRAY)
         if claude is not None:
-            lines.append(_window_line("5-hour", claude.session_pct,
+            lines.append(_window_line("5-hour", _display_pct(claude.session_pct, percent_mode),
                                       claude.session_resets_at, now, detail_color))
-            lines.append(_window_line("Weekly", claude.weekly_pct,
+            lines.append(_window_line("Weekly", _display_pct(claude.weekly_pct, percent_mode),
                                       claude.weekly_resets_at, now, detail_color))
             if claude.fable_pct is not None:
-                lines.append(_window_line("Fable", claude.fable_pct,
+                lines.append(_window_line("Fable", _display_pct(claude.fable_pct, percent_mode),
                                           claude.fable_resets_at, now, detail_color))
             if stale_claude:
                 lines.append(_STALE_NOTE)
         else:
             lines.append((claude_note or "unavailable") + " | color=" + GRAY)
 
-    if display_mode in ("both", "codex"):
+    if "codex" in enabled:
         lines.append("Codex | color=" + GRAY)
         if codex is not None:
-            # Render only the windows Codex actually has; labels come from the
-            # payload's own durations (legacy defaults for old cached data).
             windows = [
                 (window_label(codex.primary_window_s, "5-hour"),
-                 codex.primary_pct, codex.primary_resets_at),
+                 _display_pct(codex.primary_pct, percent_mode), codex.primary_resets_at),
                 (window_label(codex.secondary_window_s, "Weekly"),
-                 codex.secondary_pct, codex.secondary_resets_at),
+                 _display_pct(codex.secondary_pct, percent_mode), codex.secondary_resets_at),
             ]
             present = [w for w in windows if w[1] is not None]
             for lbl, pct, resets in present:
@@ -395,18 +551,47 @@ def render_dropdown(
         else:
             lines.append((codex_note or "unavailable") + " | color=" + GRAY)
 
+    if "agy" in enabled:
+        lines.append("Antigravity | color=" + GRAY)
+        if agy is not None:
+            windows = [
+                ("Gemini 5-hour", _display_pct(agy.gemini_5h_pct, percent_mode, True), agy.gemini_5h_resets_at),
+                ("Gemini weekly", _display_pct(agy.gemini_weekly_pct, percent_mode, True), agy.gemini_weekly_resets_at),
+                ("External 5-hour", _display_pct(agy.external_5h_pct, percent_mode, True), agy.external_5h_resets_at),
+                ("External weekly", _display_pct(agy.external_weekly_pct, percent_mode, True), agy.external_weekly_resets_at),
+            ]
+            present = [w for w in windows if w[1] is not None]
+            if not present:
+                lines.append("no active limits | color=" + GRAY)
+            else:
+                for label, pct, resets in present:
+                    lines.append(_window_line(label, pct, resets, now, detail_color))
+            if stale_agy:
+                lines.append(_STALE_NOTE)
+        else:
+            lines.append((agy_note or "unavailable") + " | color=" + GRAY)
+
     lines.append("---")
     lines.append("Display | color=" + GRAY)
-    labels = {"claude": "Claude", "codex": "Codex", "both": "Both"}
-    lines.append(f"Show: {labels[display_mode]}")
-    for mode in ("claude", "codex", "both"):
-        label = f"--Show: {labels[mode]}" + (" ✓" if mode == display_mode else "")
+    lines.append("Show")
+    for mode in ("claude", "codex", "agy"):
+        lbl = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity"}[mode]
+        label = f"--{lbl}" + (" ✓" if mode in enabled else "")
         if cli is None:
             lines.append(label)
         else:
             py, mod = cli
             lines.append(f'{label} | bash="{py}" param1="{mod}" '
-                         f'param2="show" param3="{mode}" terminal=false refresh=true')
+                         f'param2="toggle" param3="{mode}" terminal=false refresh=true')
+    lines.append(f"Percentages: {percent_mode.title()}")
+    for mode in PERCENT_MODES:
+        label = f"--{mode.title()}" + (" ✓" if mode == percent_mode else "")
+        if cli is None:
+            lines.append(label)
+        else:
+            py, mod = cli
+            lines.append(f'{label} | bash="{py}" param1="{mod}" '
+                         f'param2="percent" param3="{mode}" terminal=false refresh=true')
     lines.append("---")
     if boost_remaining:
         ends = (now + timedelta(seconds=boost_remaining)).astimezone().strftime("%-I:%M:%S %p")
@@ -424,15 +609,18 @@ def render_dropdown(
         else:
             lines.append(f'Check every 1 min for 30 min | bash="{py}" param1="{mod}" '
                          f'param2="boost" terminal=false refresh=true')
-    details = {
-        "claude": "Claude /usage for details",
-        "codex": "Codex /status for details",
-        "both": "Claude /usage · Codex /status for details",
-    }[display_mode]
+
+    d_map = []
+    if "claude" in enabled: d_map.append("Claude /usage")
+    if "codex" in enabled: d_map.append("Codex /status")
+    if "agy" in enabled: d_map.append("Antigravity")
+    if d_map:
+        details = " · ".join(d_map) + " for details"
+    else:
+        details = "no providers enabled"
     lines.append(details + " | color=" + GRAY)
-    # Actionable remedies for provider errors, right under the details line so
-    # the note ("Keychain locked", "signed out", ...) has a matching "do this".
-    for help_text in (claude_help, codex_help):
+
+    for help_text in (claude_help, codex_help, agy_help):
         if help_text:
             lines.append(help_text + " | color=" + GRAY)
     return "\n".join(lines)
@@ -492,7 +680,7 @@ func color(_ hex: String) -> NSColor {
 
 // Per row: label, value, valueColor, timer, timerColor.
 let a = CommandLine.arguments
-guard a.count >= 6 && (a.count - 1) % 5 == 0 else { exit(1) }
+guard a.count >= 7 && (a.count - 1) % 6 == 0 else { exit(1) }
 let scale: CGFloat = CGFloat(Double(ProcessInfo.processInfo.environment["MB_SCALE"] ?? "3") ?? 3)
 let fontPt = CGFloat(Double(ProcessInfo.processInfo.environment["MB_FONT"] ?? "9") ?? 9)
 let padX = CGFloat(Double(ProcessInfo.processInfo.environment["MB_PADX"] ?? "2") ?? 2)
@@ -504,31 +692,53 @@ func run(_ s: String, _ hex: String) -> NSAttributedString {
     NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color(hex)])
 }
 
-struct Row { let label, value, timer: NSAttributedString; let hasTimer: Bool }
+struct Row { let label, value, timer: NSAttributedString; let hasTimer: Bool; let col: Int }
 let sepGray = "#8e8e93"
 var rows: [Row] = []
-let rowCount = (a.count - 1) / 5
+let rowCount = (a.count - 1) / 6
 for i in 0..<rowCount {
-    let b = 1 + i * 5
+    let b = 1 + i * 6
     let hasTimer = !a[b+3].isEmpty
+    let col = Int(a[b+5]) ?? 0
     rows.append(Row(label: run(a[b], "#ffffff"), value: run(a[b+1], a[b+2]),
-                    timer: run(a[b+3], a[b+4]), hasTimer: hasTimer))
+                    timer: run(a[b+3], a[b+4]), hasTimer: hasTimer, col: col))
 }
 let sep = run("·", sepGray)
 let spc = fontPt * scale * 0.30
 let sepW = sep.size().width
-let maxLabelW = rows.map { $0.label.size().width }.max() ?? 0
-let maxValueW = rows.map { $0.value.size().width }.max() ?? 0
-let maxTimerW = rows.map { $0.hasTimer ? $0.timer.size().width : 0 }.max() ?? 0
-let anyTimer = rows.contains { $0.hasTimer }
+
+let cols = Array(Set(rows.map { $0.col })).sorted()
+var colWidths: [Int: (label: CGFloat, value: CGFloat, timer: CGFloat, anyTimer: Bool)] = [:]
+var maxRowsInCol = 0
+var rowsByCol: [Int: [Row]] = [:]
+
+for c in cols {
+    let crows = rows.filter { $0.col == c }
+    maxRowsInCol = max(maxRowsInCol, crows.count)
+    rowsByCol[c] = crows
+    colWidths[c] = (
+        label: crows.map { $0.label.size().width }.max() ?? 0,
+        value: crows.map { $0.value.size().width }.max() ?? 0,
+        timer: crows.map { $0.hasTimer ? $0.timer.size().width : 0 }.max() ?? 0,
+        anyTimer: crows.contains { $0.hasTimer }
+    )
+}
+
 let lh = ceil(rows.map { max($0.label.size().height, $0.value.size().height) }.max() ?? 0)
 
-let labelX = padX * scale
-let valueX = labelX + maxLabelW + spc
-let sepX = valueX + maxValueW + spc
-let timerX = sepX + sepW + spc
-let pxW = (anyTimer ? timerX + maxTimerW : valueX + maxValueW) + padX * scale
-let pxH = lh * CGFloat(rows.count) + gap * scale * CGFloat(max(0, rows.count - 1)) + padY * scale * 2
+var currentX = padX * scale
+var colStarts: [Int: CGFloat] = [:]
+let colGap = padX * scale * 2
+
+for c in cols {
+    colStarts[c] = currentX
+    let w = colWidths[c]!
+    let cw = (w.anyTimer ? (w.label + spc + w.value + spc + sepW + spc + w.timer) : (w.label + spc + w.value))
+    currentX += cw + colGap
+}
+
+let pxW = currentX - colGap + padX * scale
+let pxH = lh * CGFloat(maxRowsInCol) + gap * scale * CGFloat(max(0, maxRowsInCol - 1)) + padY * scale * 2
 
 guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(pxW),
         pixelsHigh: Int(pxH), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
@@ -537,18 +747,28 @@ else { exit(1) }
 rep.size = NSSize(width: pxW, height: pxH)
 NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-for (i, row) in rows.enumerated() {
-    // origin bottom-left: draw row 0 at the top, later rows underneath.
-    let y = padY * scale + CGFloat(rows.count - 1 - i) * (lh + gap * scale)
-    row.label.draw(at: NSPoint(x: labelX, y: y))
-    row.value.draw(at: NSPoint(x: valueX, y: y))
-    if row.hasTimer {
-        sep.draw(at: NSPoint(x: sepX, y: y))
-        row.timer.draw(at: NSPoint(x: timerX, y: y))
+
+for c in cols {
+    let crows = rowsByCol[c]!
+    let cx = colStarts[c]!
+    let w = colWidths[c]!
+
+    let labelX = cx
+    let valueX = labelX + w.label + spc
+    let sepX = valueX + w.value + spc
+    let timerX = sepX + sepW + spc
+
+    for (i, row) in crows.enumerated() {
+        let y = padY * scale + CGFloat(maxRowsInCol - 1 - i) * (lh + gap * scale)
+        row.label.draw(at: NSPoint(x: labelX, y: y))
+        row.value.draw(at: NSPoint(x: valueX, y: y))
+        if row.hasTimer {
+            sep.draw(at: NSPoint(x: sepX, y: y))
+            row.timer.draw(at: NSPoint(x: timerX, y: y))
+        }
     }
 }
 NSGraphicsContext.restoreGraphicsState()
-// Tag point size = pixels ÷ scale so it displays at ~bar height, Retina-crisp.
 rep.size = NSSize(width: pxW / scale, height: pxH / scale)
 guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
 print(png.base64EncodedString())
@@ -580,16 +800,21 @@ def ensure_renderer() -> Optional[str]:
         return None
 
 
-def render_menubar_image(rows: List["BarRow"]) -> Optional[str]:
-    """Render visible rows (aligned, independently-colored value + timer)
-    to a base64 PNG, or None if Swift is unavailable."""
+
+def render_menubar_image(tiles: List["MenuTile"]) -> Optional[str]:
     binp = ensure_renderer()
-    if not binp or not rows:
+    if not binp or not tiles:
         return None
+
+    cols = sorted(list(set(t.logical_col for t in tiles)))
+    col_map = {c: i for i, c in enumerate(cols)}
+    draw_tiles = sorted(tiles, key=lambda t: (col_map[t.logical_col], t.logical_row))
+
     args = []
-    for r in rows:
-        args += [r.label, r.value, r.value_color, r.timer, r.timer_color]
-    font_pt = _MENUBAR_FONT_PT_SINGLE if len(rows) == 1 else _MENUBAR_FONT_PT
+    for t in draw_tiles:
+        args += [t.row.label, t.row.value, t.row.value_color, t.row.timer, t.row.timer_color, str(col_map[t.logical_col])]
+
+    font_pt = _MENUBAR_FONT_PT_SINGLE if len(draw_tiles) == 1 else _MENUBAR_FONT_PT
     env = dict(os.environ,
                MB_SCALE=str(_MENUBAR_SCALE), MB_FONT=str(font_pt),
                MB_PADX=str(_MENUBAR_PAD_X), MB_PADY=str(_MENUBAR_PAD_Y),
@@ -907,6 +1132,248 @@ def _get_claude(now_ms: int):
                 _CLAUDE_HELP.get(err.kind))
 
 
+
+
+def read_agy_creds() -> dict:
+    try:
+        with open(AGY_TOKEN_PATH) as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            raise UsageError("no_token", "token file is not a dictionary")
+    except (OSError, ValueError) as exc:
+        raise UsageError("no_token", f"agy auth: {exc}")
+    tok = d.get("token")
+    if not isinstance(tok, dict):
+        tok = {}
+    access = tok.get("access_token")
+    if not isinstance(access, str) or not access:
+        raise UsageError("no_token", "no agy access token")
+    return {"access_token": access, "expiry_ms": _parse_agy_expiry(tok.get("expiry"))}
+
+
+
+def _parse_agy_expiry(raw) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            dt = _parse_iso(raw)
+            if dt.tzinfo is None:  # treat a naive timestamp as UTC
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except (ValueError, OverflowError, OSError):
+            pass  # not ISO — fall through to numeric epoch handling
+    try:
+        v = float(raw)
+        if not math.isfinite(v) or not v > 0:
+            return None
+        if v >= 1e12:
+            return int(v)
+        elif v >= 1e9:
+            return int(v * 1000)
+        return None
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+def classify_agy_bucket(bucket: dict, group: Optional[dict] = None) -> Optional[str]:
+    # retrieveUserQuotaSummary identifies families through human-readable group
+    # names; bucket ids are deliberately treated only as a defensive fallback.
+    fields = ("displayName", "description", "bucketId", "modelId",
+              "quotaId", "tokenType")
+    marker = " ".join(str(obj.get(k, "")) for obj in (group or {}, bucket)
+                      for k in fields).lower()
+    if "gemini" in marker:
+        return "gemini"
+    if any(k in marker for k in ("claude", "gpt", "openai", "external", "byok")):
+        return "external"
+    return None
+
+def _normalize_agy_reset(raw) -> Optional[str]:
+    if isinstance(raw, (int, float)):
+        return _epoch_to_iso(raw)
+    if not isinstance(raw, str):
+        return None
+    try:
+        _parse_iso(raw)
+        return raw
+    except (TypeError, ValueError):
+        return None
+
+def parse_agy(data: dict) -> AgyUsage:
+    if not isinstance(data, dict):
+        raise UsageError("bad_response", "agy payload not a dict")
+
+    if "buckets" not in data and "groups" not in data:
+        raise UsageError("bad_response", "no buckets")
+
+    grouped_buckets = []
+    buckets = data.get("buckets", [])
+    groups = data.get("groups", [])
+    
+    if isinstance(buckets, list) and len(buckets) > 0:
+        grouped_buckets.extend((bucket, None) for bucket in buckets)
+    elif isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("buckets", []), list):
+                continue
+            grouped_buckets.extend((bucket, group) for bucket in group["buckets"])
+    else:
+        raise UsageError("bad_response", "agy payload missing usable buckets or groups")
+
+    valid_buckets_parsed = 0
+    total_raw_buckets = len(grouped_buckets)
+    
+    values = {("gemini", "weekly"): (None, None),
+              ("gemini", "5h"): (None, None),
+              ("external", "weekly"): (None, None),
+              ("external", "5h"): (None, None)}
+    for b, group in grouped_buckets:
+        if not isinstance(b, dict):
+            continue
+        cat = classify_agy_bucket(b, group)
+        if not cat:
+            continue
+
+        pct = None
+        if "remainingFraction" in b:
+            try:
+                frac = float(b["remainingFraction"])
+                if math.isfinite(frac):
+                    pct = max(0, min(100, round(frac * 100)))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        elif "remainingAmount" in b and "limit" in b:
+            try:
+                amt = float(b["remainingAmount"])
+                limit = float(b["limit"])
+                if math.isfinite(amt) and math.isfinite(limit) and limit > 0:
+                    pct = max(0, min(100, round((amt / limit) * 100)))
+            except (TypeError, ValueError, ZeroDivisionError, OverflowError):
+                pass
+
+        if pct is None:
+            continue
+
+        window_raw = str(b.get("window", "")).lower().replace(" ", "")
+        if window_raw in ("18000s", "5h", "5-hour", "fivehour"):
+            window = "5h"
+        elif window_raw in ("604800s", "168h", "7d", "weekly", "week"):
+            window = "weekly"
+        else:
+            continue
+            
+        valid_buckets_parsed += 1
+        resets = _normalize_agy_reset(b.get("resetTime"))
+        old_pct, _ = values[(cat, window)]
+        # If the service ever returns duplicate buckets for one window, the
+        # lowest remaining value is the limiting one.
+        if pct is not None and (old_pct is None or pct < old_pct):
+            values[(cat, window)] = (pct, resets)
+
+    if total_raw_buckets > 0 and valid_buckets_parsed == 0:
+        raise UsageError("bad_response", "no recognizable buckets in payload")
+
+    return AgyUsage(
+        *values[("gemini", "weekly")], *values[("gemini", "5h")],
+        *values[("external", "weekly")], *values[("external", "5h")],
+    )
+
+def fetch_agy(token: str, host: str = AGY_PROD_HOST) -> dict:
+    req = urllib.request.Request(
+        f"{host}/v1internal:retrieveUserQuotaSummary",
+        data=b"{}", method="POST",
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json",
+                 "User-Agent": "antigravity/1.1.1"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise UsageError("auth", "HTTP 401")
+        if exc.code in (403, 404) and host == AGY_PROD_HOST:
+            return fetch_agy(token, AGY_DAILY_HOST)
+        raise UsageError("bad_response", f"HTTP {exc.code}")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise UsageError("offline", str(exc))
+    except ValueError as exc:
+        raise UsageError("bad_response", f"non-JSON: {exc}")
+
+def agy_cache_save(a: AgyUsage) -> None:
+    try:
+        os.makedirs(os.path.dirname(AGY_CACHE_PATH), exist_ok=True)
+        with open(AGY_CACHE_PATH, "w") as f:
+            json.dump({
+                field: getattr(a, field) for field in AgyUsage.__dataclass_fields__
+            }, f)
+    except OSError:
+        pass
+
+def agy_cache_load() -> Optional[AgyUsage]:
+    try:
+        with open(AGY_CACHE_PATH) as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            return None
+        fields = tuple(AgyUsage.__dataclass_fields__)
+        pct_fields = tuple(field for field in fields if field.endswith("_pct"))
+        
+        for field in pct_fields:
+            if field in d and d[field] is not None:
+                try:
+                    val = float(d[field])
+                    if not math.isfinite(val) or val < 0 or val > 100:
+                        d[field] = None
+                    else:
+                        d[field] = val
+                except (TypeError, ValueError):
+                    d[field] = None
+                    
+        if all(d.get(field) is None for field in pct_fields):
+            return None
+            
+        for field in fields:
+            if not field.endswith("_pct") and d.get(field) is not None:
+                if not isinstance(d[field], str) or _normalize_agy_reset(d[field]) is None:
+                    d[field] = None
+                    
+        return AgyUsage(*(d.get(field) for field in fields))
+    except Exception:
+        return None
+
+_AGY_NOTES = {
+    "no_token": "not signed in — open Antigravity",
+    "auth": "token expired — open Antigravity",
+    "offline": "offline",
+    "bad_response": "rate-limited or error",
+}
+_AGY_HELP = {
+    "no_token": "Antigravity fix: sign in to Antigravity, then Check now",
+    "auth": "Antigravity fix: open Antigravity to refresh its login, then Check now",
+    "offline": "Antigravity fix: check your connection, then Check now",
+    "bad_response": "Antigravity: temporary API error — retries at next check",
+}
+
+def _get_agy(now_ms: int):
+    try:
+        creds = read_agy_creds()
+        if creds["expiry_ms"] and now_ms >= creds["expiry_ms"]:
+            raise UsageError("auth", "agy token expired")
+        data = fetch_agy(creds["access_token"])
+        a = parse_agy(data)
+        agy_cache_save(a)
+        return a, False, None, None
+    except UsageError as err:
+        if err.kind in _TRANSIENT_KINDS:
+            cached = agy_cache_load()
+            if cached is not None:
+                return cached, True, None, None
+        return (None, False, _AGY_NOTES.get(err.kind, "unavailable"),
+                _AGY_HELP.get(err.kind))
+    except Exception:
+        return (None, False, _AGY_NOTES["bad_response"], _AGY_HELP["bad_response"])
+
+
 def _get_codex(now_ms: int):
     """Return (CodexUsage|None, stale, note, help), cache fallback on transient."""
     try:
@@ -933,16 +1400,24 @@ def _detect_interval() -> int:
 def assemble_output(rows, claude, codex, now, interval_s, stale_c, stale_x,
                     note_c, note_x, image_b64,
                     boost_remaining=None, cli=None, display_mode="both",
-                    detail_color=GRAY, help_c=None, help_x=None) -> str:
-    """Pure: build the SwiftBar output (menu-bar line + dropdown). The next-check
-    time lives only in the dropdown; the menu bar shows just the image."""
-    if image_b64:
+                    detail_color=GRAY, help_c=None, help_x=None,
+                    *,
+                    agy=None, stale_a=False, note_a=None, help_a=None,
+                    enabled=None, tiles=None, percent_mode="used") -> str:
+    if enabled is not None and not enabled:
+        first = "usage | color=" + GRAY
+    elif not rows:
+        first = "usage | color=" + GRAY
+    elif image_b64:
         first = f"| image={image_b64}"
-    else:  # graceful fallback when Swift rendering is unavailable
+    else:
         first = " · ".join(_bar_row_text(r) for r in rows)
     dropdown = render_dropdown(claude, codex, now, interval_s, stale_c, stale_x,
                                note_c, note_x, boost_remaining, cli, display_mode,
-                               detail_color, help_c, help_x)
+                               detail_color, help_c, help_x,
+                               agy=agy, stale_agy=stale_a, agy_note=note_a,
+                               agy_help=help_a, enabled=enabled,
+                               percent_mode=percent_mode)
     return first + "\n" + dropdown
 
 
@@ -1020,13 +1495,24 @@ def build_output(now: datetime, interval_s: Optional[int] = None) -> str:
     effective = BOOST_INTERVAL_S if boost_rem else base
     claude, stale_c, note_c, help_c = _get_claude(now_ms)
     codex, stale_x, note_x, help_x = _get_codex(now_ms)
+    agy, stale_a, note_a, help_a = _get_agy(now_ms)
+
+    enabled = enabled_load()
+    percent_mode = percent_mode_load()
     display_mode = display_mode_load()
-    rows = filter_menubar_rows(menubar_rows(claude, codex, now), display_mode)
-    image_b64 = render_menubar_image(rows)
+
+    tiles = menubar_tiles(claude, codex, agy, now, percent_mode)
+    filtered = filter_menubar_tiles(tiles, enabled)
+    rows = [t.row for t in filtered]
+    image_b64 = render_menubar_image(filtered)
+
     cli = (sys.executable, os.path.abspath(__file__))
     return assemble_output(rows, claude, codex, now, effective, stale_c, stale_x,
                            note_c, note_x, image_b64, boost_rem, cli, display_mode,
-                           GRAY, help_c, help_x)
+                           GRAY, help_c, help_x,
+                           agy=agy, stale_a=stale_a, note_a=note_a, help_a=help_a,
+                           enabled=enabled, tiles=filtered,
+                           percent_mode=percent_mode)
 
 
 def main() -> None:
@@ -1040,7 +1526,17 @@ if __name__ == "__main__":
     elif _cmd == "stop":
         boost_stop()
     elif _cmd == "show":
-        display_mode_save(sys.argv[2] if len(sys.argv) > 2 else "both")
+        val = sys.argv[2] if len(sys.argv) > 2 else "both"
+        if val == "both":
+            enabled_save(set(PROVIDERS))
+        elif val in ("claude", "codex"):
+            enabled_save({val})
+        _swiftbar_refresh()
+    elif _cmd == "toggle":
+        enabled_toggle(sys.argv[2] if len(sys.argv) > 2 else "")
+        _swiftbar_refresh()
+    elif _cmd in ("percent", "agy-percent"):
+        percent_mode_save(sys.argv[2] if len(sys.argv) > 2 else "used")
         _swiftbar_refresh()
     elif _cmd == "_boostloop":
         boost_loop()

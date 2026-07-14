@@ -1,0 +1,19 @@
+{
+  "_fixtureNote": "Shape of a live retrieveUserQuotaSummary response captured 2026-07-12; all values and timestamps are synthetic.",
+  "groups": [
+    {
+      "buckets": [
+        {"bucketId": "gemini-weekly", "displayName": "Weekly Limit", "window": "weekly", "resetTime": "2030-01-01T00:00:00Z", "remainingFraction": 0.5},
+        {"bucketId": "gemini-5h", "displayName": "Five Hour Limit", "window": "5h", "resetTime": "2030-01-01T05:00:00Z", "remainingFraction": 0.75}
+      ],
+      "displayName": "Gemini Models"
+    },
+    {
+      "buckets": [
+        {"bucketId": "3p-weekly", "displayName": "Weekly Limit", "window": "weekly", "resetTime": "2030-01-02T00:00:00Z", "remainingFraction": 0.25},
+        {"bucketId": "3p-5h", "displayName": "Five Hour Limit", "window": "5h", "resetTime": "2030-01-02T05:00:00Z", "remainingFraction": 1.0}
+      ],
+      "displayName": "Claude and GPT models"
+    }
+  ]
+}

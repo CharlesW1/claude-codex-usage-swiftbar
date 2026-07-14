@@ -1,88 +1,87 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import json
+from unittest.mock import patch, MagicMock
+
 from claude_usage import (
-    menubar_rows, timer_color, next_check_label, filter_menubar_rows,
-    Usage, CodexUsage, WHITE, GREEN, ORANGE, RED, GRAY,
+    Usage, CodexUsage, AgyUsage,
+    menubar_tiles, filter_menubar_tiles, render_menubar_image, MenuTile
 )
 
-NOW = datetime(2026, 6, 28, 7, 18, 0, tzinfo=timezone.utc)
-# Claude 5h resets 10:30 (3h12m out); Codex 5h resets 09:00 (1h42m out).
-CLAUDE = Usage(11.0, "2026-06-28T10:30:00+00:00", 43.0, "2026-07-04T12:00:00+00:00")
-CODEX = CodexUsage(95.0, "2026-06-28T09:00:00+00:00", 28.0, "2026-07-04T12:00:00+00:00")
+class TestMenuBar(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 7, 12, 17, 49, 0, tzinfo=timezone.utc)
+        self.c = Usage(50.0, None, 50.0, None)
+        self.x = CodexUsage(50.0, None, 50.0, None)
+        self.a = AgyUsage(40.0, None, 50.0, None,
+                          30.0, None, 60.0, None)
 
+    def test_logical_coordinates(self):
+        tiles = menubar_tiles(self.c, self.x, self.a, self.now)
+        self.assertEqual(len(tiles), 4)
 
-class TestTimerColor(unittest.TestCase):
-    def test_imminent_is_white(self):
-        self.assertEqual(timer_color(10 * 60), WHITE)      # 10m left (best)
-    def test_soon_is_green(self):
-        self.assertEqual(timer_color(30 * 60), GREEN)      # 30m left
-    def test_mid_is_orange(self):
-        self.assertEqual(timer_color(2 * 3600), ORANGE)    # 2h left
-    def test_far_is_red(self):
-        self.assertEqual(timer_color(4 * 3600), RED)       # 4h left
+        cld = next(t for t in tiles if t.row.label == "Cld")
+        self.assertEqual(cld.logical_col, 0)
+        self.assertEqual(cld.logical_row, 0)
 
-    # A weekly window must scale its tiers (fractions of the window), not
-    # reuse the 5-hour absolutes — otherwise it sits red for ~7 days straight.
-    def test_weekly_window_scales_tiers(self):
-        wk = 7 * 86400
-        self.assertEqual(timer_color(6 * 3600, wk), WHITE)    # 6h left ≈ 3.6%
-        self.assertEqual(timer_color(1 * 86400, wk), GREEN)   # 1d ≈ 14%
-        self.assertEqual(timer_color(3 * 86400, wk), ORANGE)  # 3d ≈ 43%
-        self.assertEqual(timer_color(6 * 86400, wk), RED)     # 6d ≈ 86%
+        cdx = next(t for t in tiles if t.row.label == "Cdx")
+        self.assertEqual(cdx.logical_col, 0)
+        self.assertEqual(cdx.logical_row, 1)
 
-    def test_default_window_matches_legacy_5h_behavior(self):
-        for secs in (10 * 60, 30 * 60, 2 * 3600, 4 * 3600):
-            self.assertEqual(timer_color(secs), timer_color(secs, 18000))
+        agg = next(t for t in tiles if t.row.label == "AgG")
+        self.assertEqual(agg.logical_col, 1)
+        self.assertEqual(agg.logical_row, 0)
 
+        agx = next(t for t in tiles if t.row.label == "AgX")
+        self.assertEqual(agx.logical_col, 1)
+        self.assertEqual(agx.logical_row, 1)
 
-class TestMenubarRows(unittest.TestCase):
-    def test_value_and_timer_colored_independently(self):
-        rows = menubar_rows(CLAUDE, CODEX, NOW)
-        c, x = rows
-        # Claude: 11% used -> white value (best); 3h12m left -> red timer
-        self.assertEqual((c.label, c.value, c.value_color), ("C", "11%", WHITE))
-        self.assertEqual((c.timer, c.timer_color), ("3h12m", RED))
-        # Codex: 95% used -> red value; 1h42m left -> orange timer
-        self.assertEqual((x.label, x.value, x.value_color), ("Cx", "95%", RED))
-        self.assertEqual((x.timer, x.timer_color), ("1h42m", ORANGE))
+    def test_filter_by_enabled(self):
+        tiles = menubar_tiles(self.c, self.x, self.a, self.now)
 
-    def test_missing_reset_has_empty_timer(self):
-        claude = Usage(0.0, None, 43.0, "2026-07-04T12:00:00+00:00")
-        c = menubar_rows(claude, CODEX, NOW)[0]
-        self.assertEqual(c.value, "0%")
-        self.assertEqual(c.timer, "")
+        filtered = filter_menubar_tiles(tiles, {"claude", "agy"})
+        self.assertEqual(len(filtered), 3)
+        self.assertTrue(all(t.provider in {"claude", "agy"} for t in filtered))
 
-    def test_missing_provider_is_dash(self):
-        rows = menubar_rows(CLAUDE, None, NOW)
-        self.assertEqual((rows[1].label, rows[1].value, rows[1].value_color),
-                         ("Cx", "—", GRAY))
+        empty = filter_menubar_tiles(tiles, set())
+        self.assertEqual(len(empty), 0)
 
-    def test_filter_can_show_only_claude(self):
-        rows = filter_menubar_rows(menubar_rows(CLAUDE, CODEX, NOW), "claude")
-        self.assertEqual([r.label for r in rows], ["C"])
+    def test_agy_none_pct(self):
+        a = AgyUsage(None, None, None, None, 50.0, None, None, None)
+        tiles = menubar_tiles(self.c, self.x, a, self.now)
+        agg = next(t for t in tiles if t.row.label == "AgG")
+        self.assertEqual(agg.row.value, "—")
+        self.assertEqual(agg.row.timer, "")
 
-    def test_filter_can_show_only_codex(self):
-        rows = filter_menubar_rows(menubar_rows(CLAUDE, CODEX, NOW), "codex")
-        self.assertEqual([r.label for r in rows], ["Cx"])
+    def test_weekly_codex_timer_uses_days_and_hours(self):
+        reset = (self.now + timedelta(days=6, hours=13, minutes=11)).isoformat()
+        codex = CodexUsage(27.0, reset, None, None,
+                           primary_window_s=7 * 86400)
+        cdx = next(t for t in menubar_tiles(None, codex, None, self.now)
+                   if t.row.label == "Cdx")
+        self.assertEqual(cdx.row.timer, "6d 13h")
 
-    def test_filter_defaults_to_both(self):
-        rows = filter_menubar_rows(menubar_rows(CLAUDE, CODEX, NOW), "both")
-        self.assertEqual([r.label for r in rows], ["C", "Cx"])
+    @patch("claude_usage.ensure_renderer")
+    @patch("subprocess.run")
+    def test_render_collapse(self, mock_run, mock_ensure):
+        mock_ensure.return_value = "/bin/render"
+        mock_run.return_value = MagicMock(returncode=0, stdout="b64")
 
-    def test_codex_weekly_row_uses_weekly_tiers(self):
-        # Weekly-only Codex (2026 shape), resets in ~1d: green under weekly
-        # tiers, would be red under the 5-hour absolutes.
-        cx = CodexUsage(11.0, "2026-06-29T07:18:00+00:00", None, None,
-                        primary_window_s=7 * 86400)
-        x = menubar_rows(CLAUDE, cx, NOW)[1]
-        self.assertEqual(x.timer_color, GREEN)
+        # Test {agy} collapse
+        tiles = filter_menubar_tiles(menubar_tiles(None, None, self.a, self.now), {"agy"})
+        render_menubar_image(tiles)
+        args = mock_run.call_args[0][0]
+        # "0" should be the physical column
+        # args = [bin, label, val, color, timer, color, col, label, val, color, timer, color, col]
+        self.assertEqual(args[6], "0")
+        self.assertEqual(args[12], "0")
 
-
-class TestNextCheckLabel(unittest.TestCase):
-    def test_shows_local_clock_time_of_next_run(self):
-        label = next_check_label(NOW, 300)
-        self.assertRegex(label, r"↻ \d{1,2}:\d{2}:\d{2} (AM|PM)")
-
+        # Test single font size
+        mock_run.reset_mock()
+        tiles = filter_menubar_tiles(menubar_tiles(self.c, None, None, self.now), {"claude"})
+        render_menubar_image(tiles)
+        env = mock_run.call_args[1]["env"]
+        self.assertEqual(env["MB_FONT"], "15.0")
 
 if __name__ == "__main__":
     unittest.main()

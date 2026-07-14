@@ -24,13 +24,16 @@ class BuildBase(unittest.TestCase):
         self._orig = {}
         for name in ("current_token", "fetch_usage", "read_codex_creds",
                      "fetch_codex", "render_menubar_image", "CACHE_PATH",
-                     "CODEX_CACHE_PATH", "BOOST_UNTIL_PATH", "DISPLAY_MODE_PATH"):
+                     "CODEX_CACHE_PATH", "BOOST_UNTIL_PATH", "DISPLAY_MODE_PATH",
+                     "AGY_CACHE_PATH", "_get_agy"):
             self._orig[name] = getattr(claude_usage, name)
         tmp = tempfile.mkdtemp()
         claude_usage.CACHE_PATH = os.path.join(tmp, "claude.json")
         claude_usage.CODEX_CACHE_PATH = os.path.join(tmp, "codex.json")
+        claude_usage.AGY_CACHE_PATH = os.path.join(tmp, "agy.json")
         claude_usage.BOOST_UNTIL_PATH = os.path.join(tmp, "boost")
         claude_usage.DISPLAY_MODE_PATH = os.path.join(tmp, "display_mode")
+        claude_usage._get_agy = lambda now_ms: (claude_usage.AgyUsage(5, None, None, None, None, None, 0, None), False, None, None)
         # Force text fallback (no Swift) so the menu-bar line is deterministic.
         claude_usage.render_menubar_image = lambda lines: None
 
@@ -47,8 +50,8 @@ class TestBothProviders(BuildBase):
         claude_usage.fetch_codex = lambda t, a: CODEX_GOOD
         out = build_output(NOW, interval_s=300)
         first = out.splitlines()[0]
-        self.assertIn("C 46%", first)
-        self.assertIn("Cx 50%", first)
+        self.assertIn("Cld 46%", first)
+        self.assertIn("Cdx 50%", first)
         self.assertNotIn("↻", first)          # next-check moved into the menu
         self.assertIn("↻", out)               # ...and is present in the dropdown
         self.assertIn("5-hour  46%", out)
@@ -62,7 +65,7 @@ class TestBothProviders(BuildBase):
         claude_usage.read_codex_creds = lambda: {"access_token": "x", "account_id": "a"}
         claude_usage.fetch_codex = lambda t, a: CODEX_GOOD
         out = build_output(NOW, interval_s=300)
-        self.assertIn("C —", out.splitlines()[0])
+        self.assertIn("Cld —", out.splitlines()[0])
         self.assertIn("not signed in", out)
         self.assertIn("5-hour  50%", out)
 
@@ -83,7 +86,7 @@ class TestBothProviders(BuildBase):
             raise UsageError("no_token")
         claude_usage.read_codex_creds = boom
         out = build_output(NOW, interval_s=300)
-        self.assertIn("Cx —", out.splitlines()[0])
+        self.assertIn("Cdx —", out.splitlines()[0])
         self.assertIn("codex login", out)
 
     def test_saved_display_mode_filters_visible_output(self):
@@ -97,9 +100,9 @@ class TestBothProviders(BuildBase):
 
         first = out.splitlines()[0]
         self.assertNotIn("C 46%", first)
-        self.assertIn("Cx 50%", first)
+        self.assertIn("Cdx 50%", first)
         self.assertNotIn("Claude | color=#8e8e93", out)
-        self.assertIn("Show: Codex ✓", out)
+        self.assertIn("--Codex ✓", out)
 
 
 if __name__ == "__main__":

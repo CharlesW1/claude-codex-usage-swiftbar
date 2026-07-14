@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timezone
-from claude_usage import render_dropdown, Usage, CodexUsage, GRAY
+from claude_usage import render_dropdown, Usage, CodexUsage, AgyUsage, GRAY
 
 NOW = datetime(2026, 6, 28, 7, 18, 0, tzinfo=timezone.utc)
 CLAUDE = Usage(11.0, "2026-06-28T10:30:00+00:00", 43.0, "2026-07-04T12:00:00+00:00")
@@ -8,6 +8,23 @@ CODEX = CodexUsage(50.0, "2026-06-28T09:00:00+00:00", 28.0, "2026-07-04T12:00:00
 
 
 class TestRenderDropdown(unittest.TestCase):
+    def test_agy_used_remaining_toggle_and_five_hour_first(self):
+        agy = AgyUsage(89, None, 94, None, 29, None, 100, None)
+        used = render_dropdown(CLAUDE, CODEX, NOW, 300, agy=agy)
+        remaining = render_dropdown(CLAUDE, CODEX, NOW, 300, agy=agy,
+                                    percent_mode="remaining")
+        self.assertIn("Gemini 5-hour  6%", used)
+        self.assertIn("External 5-hour  0%", used)
+        self.assertIn("Gemini 5-hour  94%", remaining)
+        self.assertIn("External 5-hour  100%", remaining)
+        self.assertIn("5-hour  89%", remaining)  # Claude: 11% used
+        self.assertIn("Weekly  72%", remaining)  # Codex: 28% used
+        self.assertLess(used.index("Gemini 5-hour"), used.index("Gemini weekly"))
+        self.assertIn("Percentages: Used", used)
+        self.assertIn("Percentages: Remaining", remaining)
+        self.assertIn("--Used ✓", used)
+        self.assertIn("--Remaining ✓", remaining)
+
     def test_both_providers_present(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300)
         self.assertIn("Claude | color=#8e8e93", out)
@@ -46,22 +63,20 @@ class TestRenderDropdown(unittest.TestCase):
                               cli=("/py", "/mod.py"), display_mode="claude")
         self.assertIn("Claude | color=#8e8e93", out)
         self.assertNotIn("Codex | color=#8e8e93", out)
-        self.assertIn("\nShow: Claude\n", out)
-        self.assertIn('--Show: Claude ✓ | bash="/py" param1="/mod.py" '
-                      'param2="show" param3="claude" terminal=false refresh=true', out)
-        self.assertIn('--Show: Codex | bash="/py" param1="/mod.py" '
-                      'param2="show" param3="codex" terminal=false refresh=true', out)
+        self.assertIn("--Claude ✓", out)
+        self.assertIn('--Claude ✓ | bash="/py" param1="/mod.py" '
+                      'param2="toggle" param3="claude" terminal=false refresh=true', out)
+        self.assertIn('--Codex | bash="/py" param1="/mod.py" '
+                      'param2="toggle" param3="codex" terminal=false refresh=true', out)
 
     def test_codex_mode_hides_claude_section(self):
         out = render_dropdown(CLAUDE, CODEX, NOW, 300,
                               cli=("/py", "/mod.py"), display_mode="codex")
         self.assertNotIn("Claude | color=#8e8e93", out)
         self.assertIn("Codex | color=#8e8e93", out)
-        self.assertIn("\nShow: Codex\n", out)
-        self.assertIn('--Show: Codex ✓ | bash="/py" param1="/mod.py" '
-                      'param2="show" param3="codex" terminal=false refresh=true', out)
-        self.assertIn('--Show: Both | bash="/py" param1="/mod.py" '
-                      'param2="show" param3="both" terminal=false refresh=true', out)
+        self.assertIn("--Codex ✓", out)
+        self.assertIn('--Codex ✓ | bash="/py" param1="/mod.py" '
+                      'param2="toggle" param3="codex" terminal=false refresh=true', out)
 
     def test_codex_weekly_only_shape(self):
         # Mid-2026 Codex shape: one weekly window, no 5-hour tier. The single
