@@ -84,22 +84,24 @@ let LX: CGFloat = 76
 // eyebrow
 text("MACOS  ·  SWIFTBAR PLUGIN", LX, 118, 15, GRAY, weight: .semibold, tracking: 3)
 
-// title
-text("Claude + Codex", LX, 150, 52, WHITE, weight: .bold, tracking: -0.5)
+// title (providers line auto-sized to fit the left column)
+var titleSize: CGFloat = 52
+while textW("Claude + Codex + Antigravity", titleSize, weight: .bold, tracking: -0.5) > 596 { titleSize -= 1 }
+text("Claude + Codex + Antigravity", LX, 150 + (52 - titleSize)/2, titleSize, WHITE, weight: .bold, tracking: -0.5)
 // second line with accent on "Usage"
 let uw = text("Usage", LX, 214, 52, "#58a6ff", weight: .bold, tracking: -0.5)
 text(" in your menu bar", LX + uw, 214, 52, WHITE, weight: .bold, tracking: -0.5)
 
 // tagline (two lines)
-text("Claude Code and OpenAI Codex 5-hour & weekly limits,", LX, 300, 19.5, "#adbac7")
-text("reset countdowns, and rate-limit status — at a glance.", LX, 330, 19.5, "#adbac7")
+text("Claude Code, OpenAI Codex, and Google Antigravity", LX, 300, 19.5, "#adbac7")
+text("limits, reset countdowns, and rate-limit status — at a glance.", LX, 330, 19.5, "#adbac7")
 
 // feature bullets
 let feats: [(String, String)] = [
-    (GREEN,  "One menu-bar view for Claude Code + OpenAI Codex"),
+    (GREEN,  "One 2x2 menu-bar grid: Claude, Codex + Antigravity"),
     (ORANGE, "5-hour & weekly windows with live reset countdowns"),
     (RED,    "Color-coded percent + timer so rate-limit risk is obvious"),
-    (WHITE,  "Refresh now, plus a temporary 1-minute boost"),
+    (WHITE,  "Per-provider show/hide, refresh now + 1-minute boost"),
 ]
 var fy: CGFloat = 392
 for (c, s) in feats {
@@ -114,7 +116,7 @@ text("github.com/CharlesW1/claude-codex-usage-swiftbar", LX, 560, 15.5, GRAY, we
 // =========================================================
 // RIGHT: menu-bar + dropdown mock card
 // =========================================================
-let cardX: CGFloat = 704, cardTop: CGFloat = 120, cardW: CGFloat = 500, cardH: CGFloat = 400
+let cardX: CGFloat = 704, cardTop: CGFloat = 96, cardW: CGFloat = 500, cardH: CGFloat = 404
 let cardR: CGFloat = 18
 // drop shadow
 ctx.saveGState()
@@ -163,50 +165,68 @@ text(clock, cardX + cardW - 20 - clockW, cardTop + 23, 14, "#adbac7", weight: .m
 
 // ---- the chip (two colored rows), placed left of the clock ----
 struct Row { let label, value, vcol, timer, tcol: String }
-let rows = [ Row(label: "C",  value: "82%", vcol: ORANGE, timer: "1h 48m", tcol: ORANGE),
-             Row(label: "Cx", value: "55%", vcol: GREEN,  timer: "36m",    tcol: GREEN) ]
+// 2x2 grid: left column Claude/Codex, right column Antigravity Gemini/External
+let cols: [[Row]] = [
+    [ Row(label: "Cld", value: "82%", vcol: ORANGE, timer: "1h 48m", tcol: ORANGE),
+      Row(label: "Cdx", value: "55%", vcol: GREEN,  timer: "36m",    tcol: GREEN) ],
+    [ Row(label: "AgG", value: "12%", vcol: GREEN,  timer: "1d 21h", tcol: GREEN),
+      Row(label: "AgX", value: "71%", vcol: ORANGE, timer: "3d 1h",  tcol: ORANGE) ],
+]
 let cf: CGFloat = 13.5           // chip font pt
 let spc: CGFloat = cf * 0.34
+let colGap: CGFloat = cf * 0.9
 let sepW = textW("·", cf, mono: true)
-let maxLbl = rows.map { textW($0.label, cf, weight: .medium, mono: true) }.max()!
-let maxVal = rows.map { textW($0.value, cf, weight: .medium, mono: true) }.max()!
-let maxTmr = rows.map { textW($0.timer, cf, weight: .medium, mono: true) }.max()!
-let chipW = maxLbl + spc + maxVal + spc + sepW + spc + maxTmr
+struct ColM { let lbl, val, tmr, w: CGFloat }
+let metrics: [ColM] = cols.map { rows in
+    let l = rows.map { textW($0.label, cf, weight: .medium, mono: true) }.max()!
+    let v = rows.map { textW($0.value, cf, weight: .medium, mono: true) }.max()!
+    let t = rows.map { textW($0.timer, cf, weight: .medium, mono: true) }.max()!
+    return ColM(lbl: l, val: v, tmr: t, w: l + spc + v + spc + sepW + spc + t)
+}
+let chipW = metrics[0].w + colGap + metrics[1].w
 let chipRight = cardX + cardW - 40 - clockW - 22
 let chipX = chipRight - chipW
 let rowH = cf + 4
 let chipTop = cardTop + (stripH - rowH*2)/2
 // selected-item highlight behind chip
 roundRect(chipX - 10, chipTop - 4, chipW + 20, rowH*2 + 8, 6, fill: "#ffffff", fillAlpha: 0.08)
-for (i, r) in rows.enumerated() {
-    let ry = chipTop + CGFloat(i) * rowH
-    let lx = chipX
-    let vx = lx + maxLbl + spc
-    let sx = vx + maxVal + spc
-    let tx = sx + sepW + spc
-    text(r.label, lx, ry, cf, WHITE, weight: .medium, mono: true)
-    text(r.value, vx, ry, cf, r.vcol, weight: .medium, mono: true)
-    text("·",     sx, ry, cf, GRAY,  weight: .medium, mono: true)
-    text(r.timer, tx, ry, cf, r.tcol, weight: .medium, mono: true)
+var colX = chipX
+for (ci, rows) in cols.enumerated() {
+    let m = metrics[ci]
+    for (i, r) in rows.enumerated() {
+        let ry = chipTop + CGFloat(i) * rowH
+        let lx = colX
+        let vx = lx + m.lbl + spc
+        let sx = vx + m.val + spc
+        let tx = sx + sepW + spc
+        text(r.label, lx, ry, cf, WHITE, weight: .medium, mono: true)
+        text(r.value, vx, ry, cf, r.vcol, weight: .medium, mono: true)
+        text("·",     sx, ry, cf, GRAY,  weight: .medium, mono: true)
+        text(r.timer, tx, ry, cf, r.tcol, weight: .medium, mono: true)
+    }
+    colX += m.w + colGap
 }
 
 // --- dropdown content (default text color; matches real design) ---
 var dy = cardTop + stripH + 22
 let dLX = cardX + 26
-func windowLine(_ label: String, _ pct: String, _ reset: String, _ y: CGFloat) {
+func windowLine(_ label: String, _ pct: String, _ reset: String, _ y: CGFloat, labelW: CGFloat = 74) {
     let mono = true
     let lw = text(label, dLX, y, 15.5, "#e6edf3", mono: mono)
     _ = lw
-    let pctX = dLX + 74
+    let pctX = dLX + labelW
     text(pct, pctX, y, 15.5, "#e6edf3", weight: .medium, mono: mono)
     text("·  resets in " + reset, pctX + 52, y, 15.5, "#8b949e", mono: mono)
 }
-text("Claude", dLX, dy, 13.5, GRAY, weight: .semibold, tracking: 0.5); dy += 26
-windowLine("5-hour", "82%", "1h 48m", dy); dy += 27
-windowLine("Weekly", "44%", "4d 10h", dy); dy += 34
-text("Codex", dLX, dy, 13.5, GRAY, weight: .semibold, tracking: 0.5); dy += 26
-windowLine("5-hour", "55%", "36m", dy); dy += 27
-windowLine("Weekly", "32%", "6d 3h", dy); dy += 32
+text("Claude", dLX, dy, 13.5, GRAY, weight: .semibold, tracking: 0.5); dy += 25
+windowLine("5-hour", "82%", "1h 48m", dy); dy += 26
+windowLine("Weekly", "44%", "4d 10h", dy); dy += 31
+text("Codex", dLX, dy, 13.5, GRAY, weight: .semibold, tracking: 0.5); dy += 25
+windowLine("5-hour", "55%", "36m", dy); dy += 26
+windowLine("Weekly", "32%", "6d 3h", dy); dy += 31
+text("Antigravity", dLX, dy, 13.5, GRAY, weight: .semibold, tracking: 0.5); dy += 25
+windowLine("Gemini weekly", "12%", "1d 21h", dy, labelW: 150); dy += 26
+windowLine("External weekly", "71%", "3d 1h", dy, labelW: 150); dy += 31
 // separator
 col("#30363d").setStroke()
 let ln = NSBezierPath()

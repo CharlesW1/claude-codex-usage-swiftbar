@@ -34,8 +34,9 @@ comparable.
 - Color-coded usage and reset timing so rate-limit risk is visible at a glance.
 - Dropdown detail for Claude `/usage`, Codex `/status`, and Antigravity windows.
 - Manual **Refresh now** plus a temporary 1-minute refresh boost for 30 minutes.
-- Local-only token reads from the macOS Keychain and `~/.codex/auth.json`; no
-  Python packages required.
+- Local-only token reads from the macOS Keychain (or `~/.claude/.credentials.json`),
+  `~/.codex/auth.json`, and Antigravity's local token file; no Python packages
+  required.
 
 ## Dependencies
 
