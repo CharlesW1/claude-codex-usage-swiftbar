@@ -220,6 +220,19 @@ Run the plugin once from the repo with:
 The first output line should be either `| image=...` or a plain-text fallback,
 followed by `---` and dropdown lines.
 
+### Releasing
+
+CI runs the test suite on every push and pull request. Releases are cut by
+tag: bump `<xbar.version>` in `claude-usage.300s.py`, commit, then
+
+```bash
+git tag v2.1.0 && git push origin v2.1.0
+```
+
+The release workflow re-runs the tests, checks that the tag matches
+`<xbar.version>`, and publishes a GitHub Release with generated notes and the
+two plugin files attached.
+
 ## See Also
 
 - [ccusage](https://github.com/ryoppippi/ccusage) — Claude Code usage analysis in

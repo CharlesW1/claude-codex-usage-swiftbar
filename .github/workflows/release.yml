@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run test suite
+        run: python3 -m unittest discover -s tests -v
+      - name: Verify tag matches plugin version
+        run: |
+          plugin_version=$(sed -n 's/.*<xbar.version>\(v[^<]*\)<\/xbar.version>.*/\1/p' claude-usage.300s.py)
+          echo "tag=${GITHUB_REF_NAME} plugin=${plugin_version}"
+          if [ "${GITHUB_REF_NAME}" != "${plugin_version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match <xbar.version> ${plugin_version} in claude-usage.300s.py"
+            exit 1
+          fi
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --title "${GITHUB_REF_NAME}" \
+            claude_usage.py claude-usage.300s.py
