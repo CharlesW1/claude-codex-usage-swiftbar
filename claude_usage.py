@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
@@ -1354,8 +1355,126 @@ _AGY_HELP = {
     "bad_response": "Antigravity: temporary API error — retries at next check",
 }
 
+def _parse_agy_ls_processes(ps_output: str) -> List[Tuple[str, str]]:
+    """(pid, csrf_token) for every Antigravity IDE language server. Only the
+    IDE server carries --csrf_token (the CLI server has none), so requiring it
+    selects the right processes; an IDE restart can leave more than one, so we
+    return all candidates and let the caller probe each."""
+    found: List[Tuple[str, str]] = []
+    for line in ps_output.splitlines():
+        if "language_server" not in line or "--csrf_token" not in line:
+            continue
+        if "antigravity" not in line:  # skip other Codeium/Windsurf servers
+            continue
+        m = re.search(r"--csrf_token[=\s]+(\S+)", line)
+        if not m:
+            continue
+        pid = line.strip().split(None, 1)[0]
+        if pid.isdigit():
+            found.append((pid, m.group(1)))
+    return found
+
+
+def _parse_lsof_listeners(lsof_output: str) -> List[Tuple[str, str]]:
+    """(host, port) loopback listeners in first-seen order; host is
+    "127.0.0.1" or "::1"."""
+    listeners: List[Tuple[str, str]] = []
+    for m in re.finditer(r"(127\.0\.0\.1|\[?::1\]?):(\d+)\b", lsof_output):
+        host = "::1" if ":" in m.group(1) else "127.0.0.1"
+        item = (host, m.group(2))
+        if item not in listeners:
+            listeners.append(item)
+    return listeners
+
+
+def _find_agy_local_server() -> Optional[Tuple[str, List[Tuple[str, str]]]]:
+    """(csrf_token, [(host, port), ...]) for a running Antigravity language
+    server, or None. Tries each candidate process until one has listeners.
+    Best-effort: any failure returns None so callers fall back."""
+    try:
+        ps = subprocess.run(["ps", "-axww", "-o", "pid=", "-o", "command="],
+                            capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for pid, csrf in _parse_agy_ls_processes(ps.stdout):
+        try:
+            ls = subprocess.run(["lsof", "-nP", "-a", "-p", pid,
+                                 "-iTCP", "-sTCP:LISTEN"],
+                                capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        listeners = _parse_lsof_listeners(ls.stdout)
+        if listeners:
+            return csrf, listeners[:4]  # cap probes to bound latency
+    return None
+
+
+def _agy_local_request(host: str, port: str, csrf: str) -> Optional[dict]:
+    """POST the quota-summary RPC to one loopback listener. Returns the
+    unwrapped payload dict, or None on any failure."""
+    netloc = "[%s]:%s" % (host, port) if ":" in host else "%s:%s" % (host, port)
+    url = ("https://%s/exa.language_server_pb.LanguageServerService"
+           "/RetrieveUserQuotaSummary" % netloc)
+    try:
+        req = urllib.request.Request(
+            url, data=b"{}", method="POST",
+            headers={"Content-Type": "application/json",
+                     "x-codeium-csrf-token": csrf})
+        # Self-signed cert on loopback; verifying it is neither possible nor
+        # meaningful for a 127.0.0.1 / ::1 connection to our own machine.
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=2, context=ctx) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(body, dict):
+        return None
+    # The local RPC wraps the payload as {"response": {...}}; the cloud
+    # endpoint returns the same groups/buckets object flat. Unwrap so parse_agy
+    # sees the shape it already handles.
+    if "groups" not in body and "buckets" not in body:
+        inner = body.get("response")
+        return inner if isinstance(inner, dict) else None
+    return body
+
+
+def _fetch_agy_local() -> Optional[dict]:
+    """Query the running Antigravity language server for quota. Returns an
+    unwrapped payload dict on success, or None if the server isn't running or
+    doesn't answer — the server holds a live, auto-refreshed token, so this
+    works even when the on-disk token has expired."""
+    found = _find_agy_local_server()
+    if not found:
+        return None
+    csrf, listeners = found
+    for host, port in listeners:
+        data = _agy_local_request(host, port, csrf)
+        if data is not None:
+            return data
+    return None
+
+
 def _get_agy(now_ms: int):
     try:
+        # Prefer the running Antigravity language server: it holds a live,
+        # auto-refreshed token, so it keeps working when the on-disk token has
+        # expired (Antigravity refreshes in memory but rewrites the token file
+        # only occasionally).
+        try:
+            local = _fetch_agy_local()
+        except Exception:
+            local = None  # never let a local-probe error skip cloud/cache
+        if local is not None:
+            try:
+                a = parse_agy(local)
+            except UsageError:
+                a = None  # malformed local reply — fall through to the cloud
+            if a is not None:
+                agy_cache_save(a)
+                return a, False, None, None
+        # Fall back to the on-disk token against the cloud quota endpoint.
         creds = read_agy_creds()
         if creds["expiry_ms"] and now_ms >= creds["expiry_ms"]:
             raise UsageError("auth", "agy token expired")

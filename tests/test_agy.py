@@ -11,7 +11,9 @@ import urllib.error
 from claude_usage import (
     AgyUsage, UsageError, classify_agy_bucket, parse_agy,
     read_agy_creds, _parse_agy_expiry, fetch_agy, _get_agy,
-    agy_cache_save, agy_cache_load, AGY_PROD_HOST, AGY_DAILY_HOST
+    agy_cache_save, agy_cache_load, AGY_PROD_HOST, AGY_DAILY_HOST,
+    _parse_agy_ls_processes, _parse_lsof_listeners, _agy_local_request,
+    _fetch_agy_local,
 )
 
 class TestAgy(unittest.TestCase):
@@ -195,53 +197,171 @@ class TestAgy(unittest.TestCase):
             fetch_agy("tok")
         self.assertEqual(cm.exception.kind, "bad_response")
 
+    @patch("claude_usage._fetch_agy_local")
     @patch("claude_usage.read_agy_creds")
     @patch("claude_usage.fetch_agy")
     @patch("claude_usage.parse_agy")
     @patch("claude_usage.agy_cache_save")
     @patch("claude_usage.agy_cache_load")
-    @patch("subprocess.run")
-    def test_get_agy(self, mock_run, mock_load, mock_save, mock_parse, mock_fetch,
-                     mock_creds):
-        # Happy
+    def test_get_agy(self, mock_load, mock_save, mock_parse, mock_fetch,
+                     mock_creds, mock_local):
+        # Local server answers: used even though the on-disk token is expired.
+        mock_local.return_value = {"groups": []}
+        mock_parse.return_value = AgyUsage(70, None, None, None, 70, None, None, None)
+        mock_creds.return_value = {"access_token": "tok", "expiry_ms": 500}
+        res = _get_agy(1000)  # now_ms past expiry, but local wins
+        self.assertEqual(res[0].gemini_weekly_pct, 70)
+        self.assertFalse(res[1])  # not stale
+        mock_save.assert_called_once()
+        mock_fetch.assert_not_called()  # cloud path skipped
+        mock_creds.assert_not_called()  # on-disk token never consulted
+
+        # Local unavailable -> fall back to on-disk token + cloud. Happy.
+        mock_local.return_value = None
+        mock_save.reset_mock()
         mock_creds.return_value = {"access_token": "tok", "expiry_ms": 2000}
         mock_parse.return_value = AgyUsage(50, None, None, None, 50, None, None, None)
         res = _get_agy(1000)
         self.assertEqual(res[0].gemini_weekly_pct, 50)
-        self.assertFalse(res[1]) # not stale
+        self.assertFalse(res[1])  # not stale
         mock_save.assert_called_once()
-        mock_run.assert_not_called()
-        
-        # Expired (yields auth note without subprocess call)
+
+        # Local unavailable + expired on-disk token -> auth note.
         mock_fetch.reset_mock()
         res = _get_agy(3000)
         self.assertIsNone(res[0])
         self.assertEqual(res[2], "token expired \u2014 open Antigravity")
         mock_fetch.assert_not_called()
-        mock_run.assert_not_called()
-        
-        # 401 (yields auth note without subprocess call)
+
+        # Local unavailable + cloud 401 -> auth note.
         mock_creds.return_value = {"access_token": "tok", "expiry_ms": 3000}
         mock_fetch.side_effect = UsageError("auth")
         res = _get_agy(1000)
         self.assertIsNone(res[0])
         self.assertEqual(res[2], "token expired \u2014 open Antigravity")
-        mock_run.assert_not_called()
-        
-        # Transient
+
+        # Transient -> stale cache.
         mock_creds.return_value = {"access_token": "tok", "expiry_ms": 3000}
         mock_fetch.side_effect = UsageError("offline")
         mock_load.return_value = AgyUsage(40, None, None, None, None, None, None, None)
         res = _get_agy(1000)
         self.assertEqual(res[0].gemini_weekly_pct, 40)
-        self.assertTrue(res[1]) # stale
-        
-        # Backstop
+        self.assertTrue(res[1])  # stale
+
+        # Backstop.
         mock_fetch.side_effect = Exception("surprise")
         res = _get_agy(1000)
         self.assertIsNone(res[0])
         self.assertFalse(res[1])
         self.assertEqual(res[2], "rate-limited or error")
+
+    @patch("claude_usage._fetch_agy_local")
+    @patch("claude_usage.read_agy_creds")
+    @patch("claude_usage.fetch_agy")
+    @patch("claude_usage.parse_agy")
+    @patch("claude_usage.agy_cache_save")
+    def test_get_agy_local_malformed_falls_through(self, mock_save, mock_parse,
+                                                   mock_fetch, mock_creds,
+                                                   mock_local):
+        # Local answers but the payload can't be parsed -> use cloud, not cache.
+        mock_local.return_value = {"garbage": True}
+        mock_creds.return_value = {"access_token": "tok", "expiry_ms": 9000}
+        mock_fetch.return_value = {"groups": []}
+        good = AgyUsage(60, None, None, None, None, None, None, None)
+        mock_parse.side_effect = [UsageError("bad_response"), good]
+        res = _get_agy(1000)
+        self.assertIs(res[0], good)
+        self.assertFalse(res[1])
+        mock_fetch.assert_called_once()
+
+    @patch("claude_usage._fetch_agy_local")
+    @patch("claude_usage.read_agy_creds")
+    @patch("claude_usage.fetch_agy")
+    @patch("claude_usage.parse_agy")
+    @patch("claude_usage.agy_cache_save")
+    def test_get_agy_local_exception_falls_through(self, mock_save, mock_parse,
+                                                   mock_fetch, mock_creds,
+                                                   mock_local):
+        # An unexpected local-probe error must not skip the cloud fallback.
+        mock_local.side_effect = Exception("boom")
+        mock_creds.return_value = {"access_token": "tok", "expiry_ms": 9000}
+        mock_fetch.return_value = {"groups": []}
+        good = AgyUsage(60, None, None, None, None, None, None, None)
+        mock_parse.return_value = good
+        res = _get_agy(1000)
+        self.assertIs(res[0], good)
+        mock_fetch.assert_called_once()
+
+    def test_parse_agy_ls_processes(self):
+        out = (
+            "2433 /Applications/Antigravity.app/Contents/Resources/bin/"
+            "language_server --override_ide_name antigravity "
+            "--csrf_token aaa --app_data_dir antigravity\n"
+            "999 /opt/windsurf/language_server --csrf_token zzz\n"
+            "111 /x/language_server --standalone antigravity\n"
+            "2500 /Applications/Antigravity.app/x/language_server "
+            "antigravity --csrf_token bbb\n"
+        )
+        # Both Antigravity servers returned; Windsurf and the CLI server skipped.
+        self.assertEqual(_parse_agy_ls_processes(out),
+                         [("2433", "aaa"), ("2500", "bbb")])
+        self.assertEqual(_parse_agy_ls_processes(""), [])
+
+    def test_parse_lsof_listeners(self):
+        lsof = (
+            "COMMAND   PID  USER   FD  TYPE  DEVICE SIZE/OFF NODE NAME\n"
+            "language_ 2433 me 6u IPv4 0x1 0t0 TCP 127.0.0.1:49228 (LISTEN)\n"
+            "language_ 2433 me 7u IPv6 0x2 0t0 TCP [::1]:49229 (LISTEN)\n"
+        )
+        self.assertEqual(_parse_lsof_listeners(lsof),
+                         [("127.0.0.1", "49228"), ("::1", "49229")])
+        self.assertEqual(_parse_lsof_listeners(""), [])
+
+    @patch("urllib.request.urlopen")
+    def test_agy_local_request_unwraps_response(self, mock_urlopen):
+        payload = {"response": {"groups": [{"buckets": []}]}}
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(payload).encode()
+        mock_urlopen.return_value.__enter__.return_value = resp
+        out = _agy_local_request("127.0.0.1", "49228", "csrf")
+        self.assertEqual(out, {"groups": [{"buckets": []}]})
+        # CSRF header and loopback URL are set on the request.
+        req = mock_urlopen.call_args.args[0]
+        self.assertIn("127.0.0.1:49228", req.full_url)
+        self.assertEqual(req.headers.get("X-codeium-csrf-token"), "csrf")
+
+    @patch("urllib.request.urlopen")
+    def test_agy_local_request_ipv6(self, mock_urlopen):
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"groups": []}).encode()
+        mock_urlopen.return_value.__enter__.return_value = resp
+        self.assertEqual(_agy_local_request("::1", "49229", "c"), {"groups": []})
+        req = mock_urlopen.call_args.args[0]
+        self.assertIn("[::1]:49229", req.full_url)
+
+    @patch("urllib.request.urlopen")
+    def test_agy_local_request_flat_and_errors(self, mock_urlopen):
+        # Already-flat payload is returned as-is.
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"groups": []}).encode()
+        mock_urlopen.return_value.__enter__.return_value = resp
+        self.assertEqual(_agy_local_request("127.0.0.1", "1", "c"), {"groups": []})
+        # Network error -> None (never raises).
+        mock_urlopen.side_effect = urllib.error.URLError("down")
+        self.assertIsNone(_agy_local_request("127.0.0.1", "1", "c"))
+
+    @patch("claude_usage._find_agy_local_server")
+    @patch("claude_usage._agy_local_request")
+    def test_fetch_agy_local(self, mock_req, mock_find):
+        # No server found -> None, no request attempted.
+        mock_find.return_value = None
+        self.assertIsNone(_fetch_agy_local())
+        mock_req.assert_not_called()
+        # Probes listeners in order, returns first non-None.
+        mock_find.return_value = ("csrf", [("127.0.0.1", "1"), ("127.0.0.1", "2")])
+        mock_req.side_effect = [None, {"groups": []}]
+        self.assertEqual(_fetch_agy_local(), {"groups": []})
+        self.assertEqual(mock_req.call_count, 2)
 
 if __name__ == "__main__":
     unittest.main()

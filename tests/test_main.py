@@ -25,6 +25,7 @@ class BuildBase(unittest.TestCase):
         for name in ("current_token", "fetch_usage", "read_codex_creds",
                      "fetch_codex", "render_menubar_image", "CACHE_PATH",
                      "CODEX_CACHE_PATH", "BOOST_UNTIL_PATH", "DISPLAY_MODE_PATH",
+                     "PERCENT_MODE_PATH", "LEGACY_AGY_PERCENT_MODE_PATH",
                      "AGY_CACHE_PATH", "_get_agy"):
             self._orig[name] = getattr(claude_usage, name)
         tmp = tempfile.mkdtemp()
@@ -33,6 +34,10 @@ class BuildBase(unittest.TestCase):
         claude_usage.AGY_CACHE_PATH = os.path.join(tmp, "agy.json")
         claude_usage.BOOST_UNTIL_PATH = os.path.join(tmp, "boost")
         claude_usage.DISPLAY_MODE_PATH = os.path.join(tmp, "display_mode")
+        # Isolate percent-mode too, or the suite reads the developer's real
+        # ~/.cache/claude-usage/percent_mode and flips used<->remaining.
+        claude_usage.PERCENT_MODE_PATH = os.path.join(tmp, "percent_mode")
+        claude_usage.LEGACY_AGY_PERCENT_MODE_PATH = os.path.join(tmp, "agy_percent_mode")
         claude_usage._get_agy = lambda now_ms: (claude_usage.AgyUsage(5, None, None, None, None, None, 0, None), False, None, None)
         # Force text fallback (no Swift) so the menu-bar line is deterministic.
         claude_usage.render_menubar_image = lambda lines: None

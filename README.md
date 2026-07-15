@@ -197,20 +197,33 @@ The public OAuth client id used by Claude Code is embedded in the script:
 GET https://chatgpt.com/backend-api/wham/usage
 ```
 
-**Antigravity** reads its OAuth token from `~/.gemini/antigravity-cli/antigravity-oauth-token`, then calls:
+**Antigravity** prefers the running Antigravity app. It reads the local
+language server's CSRF token and loopback port from the running
+`language_server` process and queries it directly:
+
+```text
+POST https://127.0.0.1:<port>/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary
+```
+
+The language server holds a live, auto-refreshed token, so this keeps working
+even when the on-disk token has expired. If the app is not running, the plugin
+falls back to the on-disk token
+(`~/.gemini/antigravity-cli/antigravity-oauth-token`) against the cloud
+endpoint:
 
 ```text
 POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary
 ```
 
-On token expiry, the plugin asks the user to open Antigravity (it never refreshes or touches the refresh token).
+The plugin never refreshes or touches Antigravity's refresh token; if both
+paths fail it shows the last cached reading or asks you to open Antigravity.
 
 The last good reading for each provider is cached locally so transient
 rate-limit or network errors can show the previous numbers marked as
 `last reading`.
 
 ### Unofficial APIs
-The Codex (`chatgpt.com/backend-api/wham/usage`) and Google (`v1internal:retrieveUserQuotaSummary`) endpoints are internal and undocumented; they may change or break without notice.
+The Codex (`chatgpt.com/backend-api/wham/usage`) and Google (`v1internal:retrieveUserQuotaSummary`) endpoints are internal and undocumented; they may change or break without notice. Antigravity's local `exa.language_server_pb.LanguageServerService` RPC is likewise an internal interface that may change between app versions.
 
 The two-line menu-bar image is drawn by a small Swift/AppKit renderer embedded in
 `claude_usage.py`. If `swiftc` is unavailable or compilation fails, the plugin
